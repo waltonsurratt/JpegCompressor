@@ -1,0 +1,7 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="JpegCompressor.vcxproj" Id="ffeece57-e834-43aa-bc31-894f22304a68" />
+</Solution>
