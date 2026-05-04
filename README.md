@@ -7,7 +7,7 @@ The library currently includes the following features:
 * Error handling for non-JPEG files
 * Includes dynamic linking (.dll) to libjpeg-turbo
 * File overwrite behavior
-* Image Quality slider bar linked to compression rate
+* Image Quality slider bar (linked to compression rate)
 
 <img width="370" height="241" alt="image" src="https://github.com/user-attachments/assets/1c500643-21fd-4b1f-9705-1fc6ae953608" />
 
