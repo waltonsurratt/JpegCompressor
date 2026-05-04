@@ -9,7 +9,7 @@ The library currently includes the following features:
 * File overwrite behavior
 * Image Quality slider bar linked to compression rate
 
-* <img width="370" height="241" alt="image" src="https://github.com/user-attachments/assets/1c500643-21fd-4b1f-9705-1fc6ae953608" />
+<img width="370" height="241" alt="image" src="https://github.com/user-attachments/assets/1c500643-21fd-4b1f-9705-1fc6ae953608" />
 
 
 # Future Changes
