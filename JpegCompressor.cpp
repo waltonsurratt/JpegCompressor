@@ -43,6 +43,9 @@ HWND hQualityValueLabel = nullptr;
 bool g_IsCompressing = false;
 std::atomic<bool> g_CompressInProgress(false);
 HWND g_hMainWnd = nullptr;
+
+// Drag-and-drop visual state
+bool g_IsDragHovering = false;
 ///////////////////////////////////////////////////////////////////////////
 
 
@@ -90,6 +93,41 @@ void UpdateStartButtonState()
     const bool hasOutput = !g_OutputFolder.empty();
 
     EnableWindow(hBtnStart, hasInput && hasOutput);
+}
+
+// Validates if the given file path has a JPEG extension (.jpg, .jpeg, .jpe).
+bool IsJpegFile(const std::wstring& path)
+{
+    size_t dot = path.find_last_of(L'.');
+    if (dot == std::wstring::npos)
+        return false;
+
+    std::wstring ext = path.substr(dot);
+    for (auto& c : ext)
+        c = towlower(c);
+
+    return ext == L".jpg" || ext == L".jpeg" || ext == L".jpe";
+}
+
+// Draws a dotted rectangle outline to indicate a drag-and-drop area.
+void DrawDragOutline(HWND hwnd, HDC hdc)
+{
+    RECT rc;
+    GetClientRect(hwnd, &rc);
+
+    InflateRect(&rc, -8, -8);
+
+    HPEN pen = CreatePen(PS_DOT, 1, RGB(80, 80, 80));
+    HBRUSH brush = (HBRUSH)GetStockObject(HOLLOW_BRUSH);
+
+    HPEN oldPen = (HPEN)SelectObject(hdc, pen);
+    HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, brush);
+
+    Rectangle(hdc, rc.left, rc.top, rc.right, rc.bottom - 22); // Subtract 22 px from the bottom for status bar height
+
+    SelectObject(hdc, oldPen);
+    SelectObject(hdc, oldBrush);
+    DeleteObject(pen);
 }
 
 
@@ -374,7 +412,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     {
         g_hMainWnd = hWnd;      // Store main window handle for later use
 
+        // Initiate common controls (for status bar and progress bar)
         InitCommonControls();
+
+        // Allow files to be dragged onto the window
+        DragAcceptFiles(g_hMainWnd, TRUE);
 
         // Create status bar
         hStatusBar = CreateWindowEx(
@@ -713,10 +755,79 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     }
     break;
 
+    case WM_DROPFILES:
+    {
+        HDROP hDrop = (HDROP)wParam;
+
+        wchar_t filePath[MAX_PATH]{};
+        if (DragQueryFile(hDrop, 0, filePath, MAX_PATH))
+        {
+            std::wstring droppedPath = filePath;
+
+            if (IsJpegFile(droppedPath))
+            {
+                g_SelectedFile = droppedPath;
+                UpdateStartButtonState();
+
+                // Send text to the first status bar pane
+                SendMessageW(
+                    hStatusBar,
+                    SB_SETTEXT,
+                    0, // pane index
+                    reinterpret_cast<LPARAM>(droppedPath.c_str()));
+
+            }
+        }
+
+        g_IsDragHovering = false;
+        InvalidateRect(g_hMainWnd, nullptr, TRUE);
+
+        DragFinish(hDrop);
+        break;
+    }
+
+    case WM_MOUSEMOVE:
+    {
+        if ((wParam & MK_LBUTTON) == 0)
+            break;
+
+        if (!g_IsDragHovering)
+        {
+            g_IsDragHovering = true;
+            InvalidateRect(g_hMainWnd, nullptr, TRUE);
+        }
+        break;
+    }
+
+    case WM_CAPTURECHANGED:
+    {
+        if (g_IsDragHovering)
+        {
+            g_IsDragHovering = false;
+            InvalidateRect(g_hMainWnd, nullptr, TRUE);
+        }
+        break;
+    }
+
+    case WM_PAINT:
+    {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(g_hMainWnd, &ps);
+
+        if (g_IsDragHovering)
+        {
+            DrawDragOutline(g_hMainWnd, hdc);
+        }
+
+        EndPaint(g_hMainWnd, &ps);
+        break;
+    }
+
     case WM_SIZE:
     {
         if (hStatusBar)
         {
+            // Resize the status bar to fit the new window size
             SendMessage(hStatusBar, WM_SIZE, 0, 0);
 
             RECT rcStatus{};
@@ -745,7 +856,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         SendMessage(hProgressBar, PBM_SETPOS, percent, 0);
 
         wchar_t text[64];
-        swprintf(text, 64, L"Compressing… %d%%", percent);
+        swprintf(text, 64, L"Compressing...%d%%", percent);
 
         SendMessage(hStatusBar, SB_SETTEXT, 0, (LPARAM)text);
     }
