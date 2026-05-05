@@ -14,14 +14,28 @@ The library currently includes the following features:
 <img width="370" height="241" alt="image" src="https://github.com/user-attachments/assets/1c500643-21fd-4b1f-9705-1fc6ae953608" />
 
 
-# Future Changes
+## Future Changes
 * Cancellation support / Cancel Button (after compression begins)
 * Batch JPEG file processing
 * Non-UI blocking compression process
+* Cross-platform support
+* Check-for-updates support
 
 
-# Future Changes
-* File Drag-and-drop feature
-* Cancellation support / Cancel Button (after compression begins)
-* Batch JPEG file processing
-* Non-UI blocking compression process
+## Documentation
+_Work in progress_
+
+## Installing
+### Windows
+Download the latest [JpegCompressor installer](https://github.com/waltonsurratt/JpegCompressor/releases/latest). `JpegCompressor_x86.exe` is 32-bit. For 64-bit systems, download `JpegCompressor_x64.exe`. All external libraries during build are statically linked, and so the executables act as independent entities and should launch without further setup or installation files required.
+
+_This application does not automatically update for new releases._
+
+You can also download `JpegCompressor_x86.zip` (32-bit),`JpegCompressor_x64.zip` (64-bit), or `JpegCompressor_x86_x64.zip` (both versions) from the [releases page](https://github.com/waltonsurratt/JpegCompressor/releases/latest).
+The `.zip` versions do not automatically update either.
+
+### MacOS
+Not yet supported
+
+### Linux
+Not yet supported
