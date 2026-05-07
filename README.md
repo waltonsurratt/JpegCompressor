@@ -1,5 +1,5 @@
 # Jpeg Compressor
-This a new project for a native, Win32-based Windows application written entirely in C++ that compresses JPEG images and offers flexibility with adjusting the quality level as desired and reducing overall file size. This application incorporates the libjpeg-turbo for JPEG file compression and optimizes the performance of all changes.
+This a new project for a native, Win32-based Windows application written entirely in C++ that compresses JPEG images and offers flexibility with adjusting the quality level as desired and reducing overall file size. This application incorporates the library libjpeg-turbo for JPEG file compression and optimizes the performance of all changes.
 
 
 # Version: 1.1.0
