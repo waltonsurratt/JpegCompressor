@@ -130,6 +130,46 @@ void DrawDragOutline(HWND hwnd, HDC hdc)
     DeleteObject(pen);
 }
 
+// Retrieves the version string of the current executable in the format "Version X.Y.Z.W".
+bool GetExecutableVersionString(std::wstring& outVersion)
+{
+    wchar_t exePath[MAX_PATH]{};
+    if (!GetModuleFileNameW(nullptr, exePath, MAX_PATH))
+        return false;
+
+    DWORD handle = 0;
+    DWORD size = GetFileVersionInfoSizeW(exePath, &handle);
+    if (size == 0)
+        return false;
+
+    std::vector<BYTE> buffer(size);
+    if (!GetFileVersionInfoW(exePath, 0, size, buffer.data()))
+        return false;
+
+    VS_FIXEDFILEINFO* verInfo = nullptr;
+    UINT len = 0;
+
+    if (!VerQueryValueW(
+        buffer.data(),
+        L"\\",
+        reinterpret_cast<LPVOID*>(&verInfo),
+        &len) || len == 0)
+        return false;
+
+    WORD major = HIWORD(verInfo->dwFileVersionMS);
+    WORD minor = LOWORD(verInfo->dwFileVersionMS);
+    WORD build = HIWORD(verInfo->dwFileVersionLS);
+    WORD revision = LOWORD(verInfo->dwFileVersionLS);
+
+    outVersion =
+        L"Version: " +
+        std::to_wstring(major) + L"." +
+        std::to_wstring(minor) + L"." +
+        std::to_wstring(build); // + L"." +
+        //std::to_wstring(revision);
+
+    return true;
+}
 
 // Compresses a JPEG file using libjpeg-turbo and saves it to the specified output folder with the given quality.
 void CompressJpegWorker(
@@ -909,8 +949,18 @@ INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
     UNREFERENCED_PARAMETER(lParam);
     switch (message)
     {
-    case WM_INITDIALOG:
-        return (INT_PTR)TRUE;
+    
+case WM_INITDIALOG:
+{
+    std::wstring versionText;
+    if (GetExecutableVersionString(versionText))
+    {
+        // IDC_STATIC_VERSION must exist in your About dialog
+        SetDlgItemTextW(hDlg, IDC_STATIC_VERSION, versionText.c_str());
+    }
+    return (INT_PTR)TRUE;
+}
+
 
     case WM_COMMAND:
         if (LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL)

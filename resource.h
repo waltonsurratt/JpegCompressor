@@ -11,6 +11,7 @@
 #define IDM_EXIT                        106
 #define IDI_JPEGCOMPRESSOR              107
 #define IDC_JPEGCOMPRESSOR              109
+#define IDC_STATIC_VERSION              110
 #define IDR_MAINFRAME                   128
 #define IDC_BTN_CHOOSE_FILE				4001
 #define IDC_BTN_OUTPUT_FOLDER			4002
