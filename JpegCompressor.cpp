@@ -1,5 +1,8 @@
+// Application: JPEG Compressor
+// Developer: Walton Surratt
+// Copyright (c) 2026 Surratt Solutions. All rights reserved.
+// 
 // JpegCompressor.cpp : Defines the entry point for the application.
-//
 #include <windows.h>   // MUST be first
 #include <commdlg.h>   // ✅ defines OPENFILENAMEW
 #include <shlobj.h>
@@ -46,8 +49,8 @@ HWND g_hMainWnd = nullptr;
 
 // Drag-and-drop visual state
 bool g_IsDragHovering = false;
-///////////////////////////////////////////////////////////////////////////
 
+// ----------------------------------------
 
 struct JpegErrorMgr
 {
@@ -61,11 +64,9 @@ static void JpegErrorExit(j_common_ptr cinfo)
     longjmp(err->setjmp_buffer, 1);
 }
 
-
-///////////////////////////////////////////////////////////////////////////
-
-
+// ----------------------------------------
 // HELPER FUNCTIONS
+// ----------------------------------------
 int SnapQuality(int value)
 {
     const int snapValues[] = { 60, 75, 85, 95 };
