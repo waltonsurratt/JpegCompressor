@@ -87,6 +87,27 @@ int SnapQuality(int value)
     return closest;
 }
 
+// Generates an output path for the compressed image based on the input file name and output folder.
+std::wstring MakeMiniOutputPath(
+    const std::wstring& inputPath,
+    const std::wstring& outputFolder)
+{
+    // Extract filename without path
+    size_t slashPos = inputPath.find_last_of(L"\\/");
+    std::wstring filename =
+        (slashPos == std::wstring::npos)
+        ? inputPath
+        : inputPath.substr(slashPos + 1);
+
+    // Remove extension
+    size_t dotPos = filename.find_last_of(L'.');
+    if (dotPos != std::wstring::npos)
+        filename = filename.substr(0, dotPos);
+
+    // Append suffix + extension
+    return outputFolder + L"\\" + filename + L"_mini.jpg";
+}
+
 // Updates the enabled/disabled state of the Start button based on whether both input and output paths are set.
 void UpdateStartButtonState()
 {
@@ -295,7 +316,7 @@ void CompressJpegWorker(
     // Write output JPEG (EXE-owned file I/O)
     // ---------------------------------------
     {
-        std::wstring outPath = outputFolder + L"\\compressed.jpg";
+        std::wstring outPath = MakeMiniOutputPath(g_SelectedFile, g_OutputFolder);
         std::ofstream outFile(outPath, std::ios::binary);
         if (outFile && outBuffer && outSize > 0)
         {
