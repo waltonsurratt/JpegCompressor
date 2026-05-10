@@ -16,10 +16,10 @@ The library currently includes the following features:
 
 ## Future Changes
 * Cancellation support / Cancel Button (after compression begins)
-* Batch JPEG file processing
+* Batch file processing
 * Non-UI blocking compression process
 * Cross-platform support
-* Check-for-updates support
+* Check-for-updates feature
 
 
 ## Documentation
