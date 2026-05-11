@@ -152,6 +152,19 @@ void DrawDragOutline(HWND hwnd, HDC hdc)
     DeleteObject(pen);
 }
 
+// Validates if the given path is a valid directory that can be used for output.
+bool IsValidOutputDirectory(const std::wstring& path)
+{
+    if (path.empty())
+        return false;
+
+    DWORD attrs = GetFileAttributesW(path.c_str());
+    if (attrs == INVALID_FILE_ATTRIBUTES)
+        return false;
+
+    return (attrs & FILE_ATTRIBUTE_DIRECTORY);
+}
+
 // Retrieves the version string of the current executable in the format "Version X.Y.Z.W".
 bool GetExecutableVersionString(std::wstring& outVersion)
 {
@@ -553,13 +566,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         hEditOutputFolder = CreateWindowW(
             L"EDIT",
             L"",
-            WS_CHILD | WS_VISIBLE | WS_BORDER | ES_READONLY,
+            WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
             130, 58, 230, 24,
             hWnd,
             (HMENU)IDC_EDIT_OUTPUT_FOLDER,
             hInst,
             nullptr
         );
+
 
         // Browse output folder button
         CreateWindowW(
@@ -633,6 +647,19 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     case WM_COMMAND:
     {
         int wmId = LOWORD(wParam);
+
+
+		// Handle EN_CHANGE for the output folder edit control to update g_OutputFolder and Start button state
+        if (HIWORD(wParam) == EN_CHANGE &&
+            LOWORD(wParam) == IDC_EDIT_OUTPUT_FOLDER)
+        {
+            wchar_t buffer[MAX_PATH]{};
+            GetWindowTextW(hEditOutputFolder, buffer, MAX_PATH);
+            g_OutputFolder = buffer;
+            UpdateStartButtonState();
+            return 0;
+        }
+
         // Parse the menu selections:
         switch (wmId)
         {
@@ -724,6 +751,25 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         {
             if (g_CompressInProgress)
                 break;
+
+
+            // ✅ Validate output directory
+            if (!IsValidOutputDirectory(g_OutputFolder))
+            {
+                SendMessage(
+                    hStatusBar,
+                    SB_SETTEXT,
+                    0,
+                    (LPARAM)L"Invalid Output Directory"
+                );
+                MessageBoxW(
+                    hWnd,
+                    L"The selected output folder is invalid or does not exist.",
+                    L"Invalid Output Directory",
+                    MB_ICONERROR | MB_OK
+                );
+                break;
+            }
 
             g_CompressInProgress = true;
             EnableWindow(hBtnStart, FALSE);
