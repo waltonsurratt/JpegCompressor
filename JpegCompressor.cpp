@@ -3,8 +3,9 @@
 // Copyright (c) 2026 Surratt Solutions. All rights reserved.
 // 
 // JpegCompressor.cpp : Defines the entry point for the application.
+
 #include <windows.h>   // MUST be first
-#include <commdlg.h>   // ✅ defines OPENFILENAMEW
+#include <commdlg.h>   // defines OPENFILENAMEW
 #include <shlobj.h>
 #include <string>
 #include <commctrl.h>
@@ -15,6 +16,7 @@
 #include <fstream>
 #include <jpeglib.h>
 #include <setjmp.h>
+
 #include "framework.h"
 #include "JpegCompressor.h"
 
@@ -22,7 +24,22 @@
 
 #define MAX_LOADSTRING 100
 
-// Global Variables:
+// If these are already defined in your headers, these guards avoid redefinition errors.
+#ifndef WM_COMPRESS_PROGRESS
+#define WM_COMPRESS_PROGRESS (WM_APP + 2)
+#endif
+#ifndef WM_COMPRESS_DONE
+#define WM_COMPRESS_DONE     (WM_APP + 3)
+#endif
+
+// New message for per-file batch status updates
+#ifndef WM_BATCH_FILE_START
+#define WM_BATCH_FILE_START  (WM_APP + 50)
+#endif
+
+// ------------------------------------------------------------
+// Global Variables
+// ------------------------------------------------------------
 HINSTANCE hInst;                                // current instance
 WCHAR szTitle[MAX_LOADSTRING];                  // The title bar text
 WCHAR szWindowClass[MAX_LOADSTRING];            // the main window class name
@@ -30,8 +47,11 @@ HWND hStatusBar = nullptr;                      // Status bar handle
 HWND hProgressBar = nullptr;                    // Progress bar handle
 HWND hBtnStart = nullptr;                       // Start button handle
 
-// Selected JPEG file to compress
-std::wstring g_SelectedFile;
+// Input selection display (fixes missing hEditInputFile usage)
+HWND hEditInputFile = nullptr;                  // Shows selected file or "<Multiple Files Selected>"
+
+// Selected JPEG files to compress (batch)
+std::vector<std::wstring> g_InputFiles;
 
 // Output folder details
 std::wstring g_OutputFolder;
@@ -43,15 +63,18 @@ int g_QualityValue = 80;   // Default quality (80%)
 HWND hQualityValueLabel = nullptr;
 
 // Compression state
-bool g_IsCompressing = false;
 std::atomic<bool> g_CompressInProgress(false);
 HWND g_hMainWnd = nullptr;
 
 // Drag-and-drop visual state
 bool g_IsDragHovering = false;
 
-// ----------------------------------------
+// Per-file status base for batch mode
+std::wstring g_CurrentFileStatusBase;
 
+// ------------------------------------------------------------
+// JPEG error handling
+// ------------------------------------------------------------
 struct JpegErrorMgr
 {
     jpeg_error_mgr pub;
@@ -64,9 +87,9 @@ static void JpegErrorExit(j_common_ptr cinfo)
     longjmp(err->setjmp_buffer, 1);
 }
 
-// ----------------------------------------
+// ------------------------------------------------------------
 // HELPER FUNCTIONS
-// ----------------------------------------
+// ------------------------------------------------------------
 int SnapQuality(int value)
 {
     const int snapValues[] = { 60, 75, 85, 95 };
@@ -111,10 +134,13 @@ std::wstring MakeMiniOutputPath(
 // Updates the enabled/disabled state of the Start button based on whether both input and output paths are set.
 void UpdateStartButtonState()
 {
-    const bool hasInput = !g_SelectedFile.empty();
-    const bool hasOutput = !g_OutputFolder.empty();
+    bool canStart =
+        !g_InputFiles.empty() &&
+        !g_OutputFolder.empty() &&
+        !g_CompressInProgress;
 
-    EnableWindow(hBtnStart, hasInput && hasOutput);
+    if (hBtnStart)
+        EnableWindow(hBtnStart, canStart);
 }
 
 // Validates if the given file path has a JPEG extension (.jpg, .jpeg, .jpe).
@@ -145,7 +171,7 @@ void DrawDragOutline(HWND hwnd, HDC hdc)
     HPEN oldPen = (HPEN)SelectObject(hdc, pen);
     HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, brush);
 
-    Rectangle(hdc, rc.left, rc.top, rc.right, rc.bottom - 22); // Subtract 22 px from the bottom for status bar height
+    Rectangle(hdc, rc.left, rc.top, rc.right, rc.bottom - 22);
 
     SelectObject(hdc, oldPen);
     SelectObject(hdc, oldBrush);
@@ -165,7 +191,7 @@ bool IsValidOutputDirectory(const std::wstring& path)
     return (attrs & FILE_ATTRIBUTE_DIRECTORY);
 }
 
-// Retrieves the version string of the current executable in the format "Version X.Y.Z.W".
+// Retrieves the version string of the current executable in the format "Version X.Y.Z".
 bool GetExecutableVersionString(std::wstring& outVersion)
 {
     wchar_t exePath[MAX_PATH]{};
@@ -194,32 +220,30 @@ bool GetExecutableVersionString(std::wstring& outVersion)
     WORD major = HIWORD(verInfo->dwFileVersionMS);
     WORD minor = LOWORD(verInfo->dwFileVersionMS);
     WORD build = HIWORD(verInfo->dwFileVersionLS);
-    WORD revision = LOWORD(verInfo->dwFileVersionLS);
 
     outVersion =
         L"Version: " +
         std::to_wstring(major) + L"." +
         std::to_wstring(minor) + L"." +
-        std::to_wstring(build); // + L"." +
-        //std::to_wstring(revision);
+        std::to_wstring(build);
 
     return true;
 }
 
-// Compresses a JPEG file using libjpeg-turbo and saves it to the specified output folder with the given quality.
+// ------------------------------------------------------------
+// Compress single JPEG file using libjpeg-turbo
+// NOTE: This worker no longer flips g_CompressInProgress or posts WM_COMPRESS_DONE.
+// That is managed by the batch controller.
+// ------------------------------------------------------------
 void CompressJpegWorker(
     std::wstring inputPath,
     std::wstring outputFolder,
     int quality)
 {
-    // ---------------------------------------
-    // Load input JPEG fully into memory (EXE)
-    // ---------------------------------------
     std::ifstream inFile(inputPath, std::ios::binary);
     if (!inFile)
         return;
 
-    // IMPORTANT: note the parentheses to avoid the "most vexing parse"
     std::vector<unsigned char> inputBuffer(
         (std::istreambuf_iterator<char>(inFile)),
         std::istreambuf_iterator<char>()
@@ -230,9 +254,6 @@ void CompressJpegWorker(
     if (inputBuffer.empty())
         return;
 
-    // ---------------------------------------
-    // Declare ALL objects before setjmp
-    // ---------------------------------------
     jpeg_decompress_struct dinfo{};
     jpeg_compress_struct   cinfo{};
 
@@ -251,9 +272,7 @@ void CompressJpegWorker(
     bool decompressorCreated = false;
     bool compressorCreated = false;
 
-    // ---------------------------------------
     // Setup decompressor
-    // ---------------------------------------
     dinfo.err = jpeg_std_error(&derr.pub);
     derr.pub.error_exit = JpegErrorExit;
 
@@ -278,9 +297,7 @@ void CompressJpegWorker(
     scanlineBuffer.resize(rowStride);
     row_pointer[0] = scanlineBuffer.data();
 
-    // ---------------------------------------
     // Setup compressor (memory destination)
-    // ---------------------------------------
     cinfo.err = jpeg_std_error(&cerr.pub);
     cerr.pub.error_exit = JpegErrorExit;
 
@@ -301,9 +318,7 @@ void CompressJpegWorker(
     jpeg_set_quality(&cinfo, quality, TRUE);
     jpeg_start_compress(&cinfo, TRUE);
 
-    // ---------------------------------------
     // Scanline loop with REAL progress
-    // ---------------------------------------
     while (dinfo.output_scanline < dinfo.output_height)
     {
         jpeg_read_scanlines(&dinfo, row_pointer, 1);
@@ -314,29 +329,20 @@ void CompressJpegWorker(
                 (dinfo.output_scanline * 100) / totalRows
                 );
 
-        PostMessage(
-            g_hMainWnd,
-            WM_COMPRESS_PROGRESS,
-            progress,
-            0
-        );
+        PostMessage(g_hMainWnd, WM_COMPRESS_PROGRESS, progress, 0);
     }
 
     jpeg_finish_compress(&cinfo);
     jpeg_finish_decompress(&dinfo);
 
-    // ---------------------------------------
-    // Write output JPEG (EXE-owned file I/O)
-    // ---------------------------------------
+    // Write output JPEG
     {
-        std::wstring outPath = MakeMiniOutputPath(g_SelectedFile, g_OutputFolder);
+        // FIX: use inputPath/outputFolder provided to this worker
+        std::wstring outPath = MakeMiniOutputPath(inputPath, outputFolder);
         std::ofstream outFile(outPath, std::ios::binary);
         if (outFile && outBuffer && outSize > 0)
         {
-            outFile.write(
-                reinterpret_cast<char*>(outBuffer),
-                outSize
-            );
+            outFile.write(reinterpret_cast<char*>(outBuffer), outSize);
         }
     }
 
@@ -349,14 +355,45 @@ cleanup:
 
     if (outBuffer)
         free(outBuffer);
+}
 
-    g_CompressInProgress = false;
+// ------------------------------------------------------------
+// Batch controller for multiple JPEG files
+// ------------------------------------------------------------
+void CompressBatchWorker(
+    std::vector<std::wstring> files,
+    std::wstring outputFolder,
+    int quality)
+{
+    const size_t total = files.size();
+
+    for (size_t i = 0; i < total; ++i)
+    {
+        if (!g_CompressInProgress)
+            break;
+
+        // Post per-file status update
+        std::wstring fileName = files[i];
+        size_t slash = fileName.find_last_of(L"\\/");
+        if (slash != std::wstring::npos)
+            fileName = fileName.substr(slash + 1);
+
+        std::wstring statusBase =
+            L"Processing (" + std::to_wstring(i + 1) + L"/" + std::to_wstring(total) + L"): " + fileName;
+
+        PostMessage(g_hMainWnd, WM_BATCH_FILE_START, 0, (LPARAM)new std::wstring(statusBase));
+
+        // Reset progress for the new file
+        PostMessage(g_hMainWnd, WM_COMPRESS_PROGRESS, 0, 0);
+
+        CompressJpegWorker(files[i], outputFolder, quality);
+    }
 
     if (IsWindow(g_hMainWnd))
         PostMessage(g_hMainWnd, WM_COMPRESS_DONE, 0, 0);
 }
 
-// Forward declarations of functions included in this code module:
+// Forward declarations
 ATOM                MyRegisterClass(HINSTANCE hInstance);
 BOOL                InitInstance(HINSTANCE, int);
 LRESULT CALLBACK    WndProc(HWND, UINT, WPARAM, LPARAM);
@@ -370,14 +407,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     UNREFERENCED_PARAMETER(hPrevInstance);
     UNREFERENCED_PARAMETER(lpCmdLine);
 
-    // TODO: Place code here.
-
-    // Initialize global strings
     LoadStringW(hInstance, IDS_APP_TITLE, szTitle, MAX_LOADSTRING);
     LoadStringW(hInstance, IDC_JPEGCOMPRESSOR, szWindowClass, MAX_LOADSTRING);
     MyRegisterClass(hInstance);
 
-    // Perform application initialization:
     if (!InitInstance(hInstance, nCmdShow))
     {
         return FALSE;
@@ -386,8 +419,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     HACCEL hAccelTable = LoadAccelerators(hInstance, MAKEINTRESOURCE(IDC_JPEGCOMPRESSOR));
 
     MSG msg;
-
-    // Main message loop:
     while (GetMessage(&msg, nullptr, 0, 0))
     {
         if (!TranslateAccelerator(msg.hwnd, hAccelTable, &msg))
@@ -400,19 +431,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     return (int)msg.wParam;
 }
 
-
-
-//
-//  FUNCTION: MyRegisterClass()
-//
-//  PURPOSE: Registers the window class.
-//
 ATOM MyRegisterClass(HINSTANCE hInstance)
 {
-    WNDCLASSEXW wcex;
+    WNDCLASSEXW wcex{};
 
     wcex.cbSize = sizeof(WNDCLASSEX);
-
     wcex.style = CS_HREDRAW | CS_VREDRAW;
     wcex.lpfnWndProc = WndProc;
     wcex.cbClsExtra = 0;
@@ -420,7 +443,6 @@ ATOM MyRegisterClass(HINSTANCE hInstance)
     wcex.hInstance = hInstance;
     wcex.hIcon = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_JPEGCOMPRESSOR));
     wcex.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    //wcex.hbrBackground  = (HBRUSH)(COLOR_WINDOW+1);
     wcex.hbrBackground = GetSysColorBrush(COLOR_BTNFACE);
     wcex.lpszMenuName = MAKEINTRESOURCEW(IDC_JPEGCOMPRESSOR);
     wcex.lpszClassName = szWindowClass;
@@ -429,30 +451,18 @@ ATOM MyRegisterClass(HINSTANCE hInstance)
     return RegisterClassExW(&wcex);
 }
 
-//
-//   FUNCTION: InitInstance(HINSTANCE, int)
-//
-//   PURPOSE: Saves instance handle and creates main window
-//
-//   COMMENTS:
-//
-//        In this function, we save the instance handle in a global variable and
-//        create and display the main program window.
-//
 BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 {
-    hInst = hInstance; // Store instance handle in our global variable
+    hInst = hInstance;
 
     HWND hWnd = CreateWindowW(
         szWindowClass,
-        //szTitle,
         L"JPEG Compressor",
-        //WS_OVERLAPPEDWINDOW,
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         CW_USEDEFAULT,
         0,
-        500,   // ✅ Width
-        320,   // ✅ Height
+        500,
+        320,
         nullptr,
         nullptr,
         hInstance,
@@ -469,28 +479,15 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
     return TRUE;
 }
 
-//
-//  FUNCTION: WndProc(HWND, UINT, WPARAM, LPARAM)
-//
-//  PURPOSE: Processes messages for the main window.
-//
-//  WM_COMMAND  - process the application menu
-//  WM_PAINT    - Paint the main window
-//  WM_DESTROY  - post a quit message and return
-//
-//
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
     switch (message)
     {
     case WM_CREATE:
     {
-        g_hMainWnd = hWnd;      // Store main window handle for later use
+        g_hMainWnd = hWnd;
 
-        // Initiate common controls (for status bar and progress bar)
         InitCommonControls();
-
-        // Allow files to be dragged onto the window
         DragAcceptFiles(g_hMainWnd, TRUE);
 
         // Create status bar
@@ -498,14 +495,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             0,
             STATUSCLASSNAME,
             L"Ready",
-            //WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP,
             WS_CHILD | WS_VISIBLE,
             0, 0, 0, 0,
             hWnd,
             nullptr,
             hInst,
-            nullptr
-        );
+            nullptr);
 
         // Create progress bar as a child of the status bar
         hProgressBar = CreateWindowEx(
@@ -517,14 +512,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             hStatusBar,
             nullptr,
             hInst,
-            nullptr
-        );
+            nullptr);
 
-        // Configure progress bar
         SendMessage(hProgressBar, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
-        SendMessage(hProgressBar, PBM_SETPOS, 0, 0);   // First  progress bar value
-
-        SendMessage(hStatusBar, SB_SETTEXT, 0, (LPARAM)L"Ready"); // First status bar message
+        SendMessage(hProgressBar, PBM_SETPOS, 0, 0);
+        SendMessage(hStatusBar, SB_SETTEXT, 0, (LPARAM)L"Ready");
 
         // "Choose File:" label
         CreateWindowW(
@@ -535,8 +527,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             hWnd,
             nullptr,
             hInst,
-            nullptr
-        );
+            nullptr);
 
         // Browse button
         CreateWindowW(
@@ -547,8 +538,18 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             hWnd,
             (HMENU)IDC_BTN_CHOOSE_FILE,
             hInst,
-            nullptr
-        );
+            nullptr);
+
+        // Read-only input display (fix)
+        hEditInputFile = CreateWindowW(
+            L"EDIT",
+            L"",
+            WS_CHILD | WS_VISIBLE | WS_BORDER | ES_READONLY | ES_AUTOHSCROLL,
+            240, 16, 220, 26,
+            hWnd,
+            nullptr,
+            hInst,
+            nullptr);
 
         // "Output Folder:" label
         CreateWindowW(
@@ -559,10 +560,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             hWnd,
             nullptr,
             hInst,
-            nullptr
-        );
+            nullptr);
 
-        // Read-only edit control to show selected folder
+        // Editable output folder edit control (requested)
         hEditOutputFolder = CreateWindowW(
             L"EDIT",
             L"",
@@ -571,9 +571,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             hWnd,
             (HMENU)IDC_EDIT_OUTPUT_FOLDER,
             hInst,
-            nullptr
-        );
-
+            nullptr);
 
         // Browse output folder button
         CreateWindowW(
@@ -584,8 +582,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             hWnd,
             (HMENU)IDC_BTN_OUTPUT_FOLDER,
             hInst,
-            nullptr
-        );
+            nullptr);
 
         // "Quality:" label
         CreateWindowW(
@@ -596,10 +593,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             hWnd,
             nullptr,
             hInst,
-            nullptr
-        );
+            nullptr);
 
-        // Quality slider (0% - 100%)
+        // Quality slider
         hQualitySlider = CreateWindowW(
             TRACKBAR_CLASS,
             nullptr,
@@ -608,39 +604,38 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             hWnd,
             (HMENU)IDC_SLIDER_QUALITY,
             hInst,
-            nullptr
-        );
+            nullptr);
 
-        // Configure slider range and default position
         SendMessage(hQualitySlider, TBM_SETRANGE, TRUE, MAKELPARAM(0, 100));
         SendMessage(hQualitySlider, TBM_SETPOS, TRUE, g_QualityValue);
         SendMessage(hQualitySlider, TBM_SETTICFREQ, 10, 0);
 
-
-        // Numeric quality value label (e.g. "85%")
+        // Numeric quality label
         hQualityValueLabel = CreateWindowW(
             L"STATIC",
-            L"80%",                     // ✅ STRING
+            L"80%",
             WS_CHILD | WS_VISIBLE,
             350, 100, 50, 20,
             hWnd,
             (HMENU)IDC_STATIC_QUALITY_VALUE,
             hInst,
-            nullptr
-        );
+            nullptr);
 
         // Start button
         hBtnStart = CreateWindowW(
             L"BUTTON",
             L"Start",
             WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON | WS_DISABLED,
-            180, 140, 120, 40,   // position
+            180, 140, 120, 40,
             hWnd,
             (HMENU)IDC_BTN_START,
             hInst,
-            nullptr
-        );
+            nullptr);
 
+        // Force initial layout so progress bar is positioned correctly immediately
+        SendMessage(hWnd, WM_SIZE, 0, 0);
+
+        UpdateStartButtonState();
     }
     break;
 
@@ -648,10 +643,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     {
         int wmId = LOWORD(wParam);
 
-
-		// Handle EN_CHANGE for the output folder edit control to update g_OutputFolder and Start button state
-        if (HIWORD(wParam) == EN_CHANGE &&
-            LOWORD(wParam) == IDC_EDIT_OUTPUT_FOLDER)
+        // Handle manual edits of output folder (requested)
+        if (HIWORD(wParam) == EN_CHANGE && wmId == IDC_EDIT_OUTPUT_FOLDER)
         {
             wchar_t buffer[MAX_PATH]{};
             GetWindowTextW(hEditOutputFolder, buffer, MAX_PATH);
@@ -660,67 +653,53 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             return 0;
         }
 
-        // Parse the menu selections:
         switch (wmId)
         {
         case IDC_BTN_CHOOSE_FILE:
         {
-            OPENFILENAMEW ofn{};
-            wchar_t filePath[MAX_PATH] = {};
+            wchar_t fileBuffer[32768] = { 0 };
 
+            OPENFILENAMEW ofn{};
             ofn.lStructSize = sizeof(ofn);
             ofn.hwndOwner = hWnd;
-            ofn.lpstrFilter =
-                L"JPEG Images (*.jpg;*.jpeg)\0*.jpg;*.jpeg\0"
-                L"All Files (*.*)\0*.*\0";
-            ofn.lpstrFile = filePath;
-            ofn.nMaxFile = MAX_PATH;
-            ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
-            ofn.lpstrDefExt = L"jpg";
+            ofn.lpstrFilter = L"JPEG Images (*.jpg;*.jpeg)\0*.jpg;*.jpeg\0";
+            ofn.lpstrFile = fileBuffer;
+            ofn.nMaxFile = _countof(fileBuffer);
+            ofn.Flags = OFN_EXPLORER | OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_ALLOWMULTISELECT;
+            ofn.lpstrTitle = L"Select JPEG Images";
 
             if (GetOpenFileNameW(&ofn))
             {
-                std::wstring selectedFile = filePath;
+                g_InputFiles.clear();
 
-                // ✅ Validate extension
-                size_t dot = selectedFile.find_last_of(L'.');
-                bool valid = false;
+                wchar_t* ptr = fileBuffer;
+                std::wstring directory = ptr;
+                ptr += directory.length() + 1;
 
-                if (dot != std::wstring::npos)
+                if (*ptr == L'\0')
                 {
-                    std::wstring ext = selectedFile.substr(dot);
-                    for (wchar_t& c : ext) c = towlower(c);
+                    // Single file selected
+                    g_InputFiles.push_back(directory);
+                    if (hEditInputFile)
+                        SetWindowTextW(hEditInputFile, directory.c_str());
+                }
+                else
+                {
+                    // Multiple files selected
+                    while (*ptr)
+                    {
+                        g_InputFiles.push_back(directory + L"\\" + ptr);
+                        ptr += wcslen(ptr) + 1;
+                    }
 
-                    valid = (ext == L".jpg" || ext == L".jpeg");
+                    if (hEditInputFile)
+                        SetWindowTextW(hEditInputFile, L"<Multiple Files Selected>");
                 }
 
-                if (!valid)
-                {
-                    MessageBoxW(
-                        hWnd,
-                        L"Invalid image format.\n\n"
-                        L"This tool only supports JPEG images "
-                        L"(.jpg, .jpeg).",
-                        L"Unsupported File",
-                        MB_ICONERROR | MB_OK
-                    );
-
-                    // ❌ Clear invalid selection
-                    g_SelectedFile.clear();
-                    UpdateStartButtonState();
-                    break;
-                }
-
-                // ✅ Valid file selected
-                g_SelectedFile = filePath;      // AFTER the user successfully selects a file
-                std::wstring statusText = L"Input: " + g_SelectedFile;
-                SendMessage(hStatusBar, SB_SETTEXT, 0, (LPARAM)statusText.c_str());
-                UpdateStartButtonState();       // ✅ MUST be called AFTER assignment
+                UpdateStartButtonState();
             }
         }
         break;
-
-
 
         case IDC_BTN_OUTPUT_FOLDER:
         {
@@ -732,109 +711,61 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             PIDLIST_ABSOLUTE pidl = SHBrowseForFolderW(&bi);
             if (pidl)
             {
-                wchar_t folderPath[MAX_PATH];
+                wchar_t folderPath[MAX_PATH]{};
                 if (SHGetPathFromIDListW(pidl, folderPath))
                 {
-                    g_OutputFolder = folderPath;        // AFTER folder is successfully selected
+                    g_OutputFolder = folderPath;
                     SetWindowTextW(hEditOutputFolder, g_OutputFolder.c_str());
                     std::wstring status = L"Output Folder: " + g_OutputFolder;
                     SendMessage(hStatusBar, SB_SETTEXT, 0, (LPARAM)status.c_str());
-                    UpdateStartButtonState();           // ✅ MUST be here
+                    UpdateStartButtonState();
                 }
                 CoTaskMemFree(pidl);
             }
         }
         break;
 
-
         case IDC_BTN_START:
         {
             if (g_CompressInProgress)
                 break;
 
-
-            // ✅ Validate output directory
+            // Error handling for invalid output directory (requested)
             if (!IsValidOutputDirectory(g_OutputFolder))
             {
-                SendMessage(
-                    hStatusBar,
-                    SB_SETTEXT,
-                    0,
-                    (LPARAM)L"Invalid Output Directory"
-                );
+                SendMessage(hStatusBar, SB_SETTEXT, 0, (LPARAM)L"Invalid Output Directory");
                 MessageBoxW(
                     hWnd,
                     L"The selected output folder is invalid or does not exist.",
                     L"Invalid Output Directory",
-                    MB_ICONERROR | MB_OK
-                );
+                    MB_ICONERROR | MB_OK);
                 break;
             }
+
+            if (g_InputFiles.empty())
+                break;
 
             g_CompressInProgress = true;
             EnableWindow(hBtnStart, FALSE);
             SendMessage(hProgressBar, PBM_SETPOS, 0, 0);
 
-            SendMessage(
-                hStatusBar,
-                SB_SETTEXT,
-                0,
-                (LPARAM)L"Compressing JPEG..."
+            g_CurrentFileStatusBase.clear();
+            SendMessage(hStatusBar, SB_SETTEXT, 0, (LPARAM)L"Starting..."
             );
 
-
-            std::thread worker(
-                CompressJpegWorker,
-                g_SelectedFile,
-                g_OutputFolder,
-                g_QualityValue
-            );
-
+            std::thread worker(CompressBatchWorker, g_InputFiles, g_OutputFolder, g_QualityValue);
             worker.detach();
-
         }
         break;
-
 
         case IDM_ABOUT:
             DialogBox(hInst, MAKEINTRESOURCE(IDD_ABOUTBOX), hWnd, About);
             break;
 
-        case IDM_FILE_RESTART:
-        {
-            wchar_t exePath[MAX_PATH] = {};
-            GetModuleFileName(nullptr, exePath, MAX_PATH);
-
-            STARTUPINFO si{};
-            si.cb = sizeof(si);
-
-            PROCESS_INFORMATION pi{};
-
-            // Launch a new instance of the same executable
-            if (CreateProcess(
-                exePath,     // Application name
-                nullptr,     // Command line
-                nullptr,
-                nullptr,
-                FALSE,
-                0,
-                nullptr,
-                nullptr,
-                &si,
-                &pi))
-            {
-                // Close handles for the new process
-                CloseHandle(pi.hThread);
-                CloseHandle(pi.hProcess);
-            }
-
-            // Cleanly exit current instance
-            PostQuitMessage(0);
-        }
-        break;
         case IDM_EXIT:
             DestroyWindow(hWnd);
             break;
+
         default:
             return DefWindowProc(hWnd, message, wParam, lParam);
         }
@@ -845,19 +776,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     {
         if ((HWND)lParam == hQualitySlider)
         {
-            g_QualityValue =
-                (int)SendMessage(hQualitySlider, TBM_GETPOS, 0, 0);
+            g_QualityValue = (int)SendMessage(hQualitySlider, TBM_GETPOS, 0, 0);
+            g_QualityValue = SnapQuality(g_QualityValue);
+            SendMessage(hQualitySlider, TBM_SETPOS, TRUE, g_QualityValue);
 
-            // Update numeric label
-            std::wstring labelText =
-                std::to_wstring(g_QualityValue) + L"%";
-
+            std::wstring labelText = std::to_wstring(g_QualityValue) + L"%";
             SetWindowTextW(hQualityValueLabel, labelText.c_str());
 
-            // Update status bar
-            std::wstring statusText =
-                L"Quality: " + labelText;
-
+            std::wstring statusText = L"Quality: " + labelText;
             SendMessage(hStatusBar, SB_SETTEXT, 0, (LPARAM)statusText.c_str());
         }
     }
@@ -874,16 +800,15 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 
             if (IsJpegFile(droppedPath))
             {
-                g_SelectedFile = droppedPath;
+                g_InputFiles.clear();
+                g_InputFiles.push_back(droppedPath);
+
+                if (hEditInputFile)
+                    SetWindowTextW(hEditInputFile, droppedPath.c_str());
+
                 UpdateStartButtonState();
 
-                // Send text to the first status bar pane
-                SendMessageW(
-                    hStatusBar,
-                    SB_SETTEXT,
-                    0, // pane index
-                    reinterpret_cast<LPARAM>(droppedPath.c_str()));
-
+                SendMessageW(hStatusBar, SB_SETTEXT, 0, (LPARAM)droppedPath.c_str());
             }
         }
 
@@ -891,8 +816,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         InvalidateRect(g_hMainWnd, nullptr, TRUE);
 
         DragFinish(hDrop);
-        break;
     }
+    break;
 
     case WM_MOUSEMOVE:
     {
@@ -904,8 +829,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             g_IsDragHovering = true;
             InvalidateRect(g_hMainWnd, nullptr, TRUE);
         }
-        break;
     }
+    break;
 
     case WM_CAPTURECHANGED:
     {
@@ -914,8 +839,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             g_IsDragHovering = false;
             InvalidateRect(g_hMainWnd, nullptr, TRUE);
         }
-        break;
     }
+    break;
 
     case WM_PAINT:
     {
@@ -928,20 +853,18 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         }
 
         EndPaint(g_hMainWnd, &ps);
-        break;
     }
+    break;
 
     case WM_SIZE:
     {
         if (hStatusBar)
         {
-            // Resize the status bar to fit the new window size
             SendMessage(hStatusBar, WM_SIZE, 0, 0);
 
             RECT rcStatus{};
             GetClientRect(hStatusBar, &rcStatus);
 
-            // Leave space for text on the left
             int progressWidth = 160;
             int progressHeight = rcStatus.bottom - 4;
 
@@ -957,78 +880,80 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     }
     break;
 
+    case WM_BATCH_FILE_START:
+    {
+        std::wstring* p = reinterpret_cast<std::wstring*>(lParam);
+        if (p)
+        {
+            g_CurrentFileStatusBase = *p;
+            SendMessage(hStatusBar, SB_SETTEXT, 0, (LPARAM)g_CurrentFileStatusBase.c_str());
+            delete p;
+        }
+    }
+    break;
+
     case WM_COMPRESS_PROGRESS:
     {
         int percent = (int)wParam;
 
         SendMessage(hProgressBar, PBM_SETPOS, percent, 0);
 
-        wchar_t text[64];
-        swprintf(text, 64, L"Compressing...%d%%", percent);
-
-        SendMessage(hStatusBar, SB_SETTEXT, 0, (LPARAM)text);
+        // Per-file progress updates (requested)
+        if (!g_CurrentFileStatusBase.empty())
+        {
+            wchar_t text[512];
+            swprintf(text, 512, L"%s - %d%%", g_CurrentFileStatusBase.c_str(), percent);
+            SendMessage(hStatusBar, SB_SETTEXT, 0, (LPARAM)text);
+        }
+        else
+        {
+            wchar_t text[64];
+            swprintf(text, 64, L"Compressing...%d%%", percent);
+            SendMessage(hStatusBar, SB_SETTEXT, 0, (LPARAM)text);
+        }
     }
     break;
 
     case WM_COMPRESS_DONE:
     {
-        SendMessage(hProgressBar, PBM_SETPOS, 100, 0);
-
-        SendMessage(
-            hStatusBar,
-            SB_SETTEXT,
-            0,
-            (LPARAM)L"Compression complete"
-        );
-
-        EnableWindow(hBtnStart, TRUE);
-    }
-    break;
-
-    case WM_APP + 1:
-    {
         g_CompressInProgress = false;
 
         SendMessage(hProgressBar, PBM_SETPOS, 100, 0);
-        SendMessage(
-            hStatusBar,
-            SB_SETTEXT,
-            0,
-            (LPARAM)L"Compression completed"
-        );
+        SendMessage(hStatusBar, SB_SETTEXT, 0, (LPARAM)L"Compression complete");
 
-        EnableWindow(hBtnStart, TRUE);
+        g_CurrentFileStatusBase.clear();
+
+        UpdateStartButtonState();
     }
     break;
-
 
     case WM_DESTROY:
         PostQuitMessage(0);
         break;
+
     default:
         return DefWindowProc(hWnd, message, wParam, lParam);
     }
+
     return 0;
 }
 
-// Message handler for about box.
+// About dialog.
 INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 {
     UNREFERENCED_PARAMETER(lParam);
+
     switch (message)
     {
-    
-case WM_INITDIALOG:
-{
-    std::wstring versionText;
-    if (GetExecutableVersionString(versionText))
+    case WM_INITDIALOG:
     {
-        // IDC_STATIC_VERSION must exist in your About dialog
-        SetDlgItemTextW(hDlg, IDC_STATIC_VERSION, versionText.c_str());
+        std::wstring versionText;
+        if (GetExecutableVersionString(versionText))
+        {
+            SetDlgItemTextW(hDlg, IDC_STATIC_VERSION, versionText.c_str());
+        }
+        return (INT_PTR)TRUE;
     }
-    return (INT_PTR)TRUE;
-}
-
 
     case WM_COMMAND:
         if (LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL)
