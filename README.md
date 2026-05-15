@@ -33,9 +33,3 @@ _This application does not automatically update for new releases._
 
 You can also download `JpegCompressor_x86.zip` (32-bit),`JpegCompressor_x64.zip` (64-bit), or `JpegCompressor_x86_x64.zip` (both versions) from the [releases page](https://github.com/waltonsurratt/JpegCompressor/releases/latest).
 The `.zip` versions do not automatically update either.
-
-### MacOS
-Not yet supported
-
-### Linux
-Not yet supported
