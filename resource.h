@@ -20,8 +20,9 @@
 #define IDC_STATIC_QUALITY_VALUE		4005
 #define IDC_BTN_START					4010
 
-#define WM_COMPRESS_PROGRESS  (WM_APP + 10)
-#define WM_COMPRESS_DONE      (WM_APP + 11)
+#define WM_COMPRESS_PROGRESS			(WM_APP + 10)
+#define WM_COMPRESS_DONE				(WM_APP + 11)
+#define WM_BATCH_FILE_START				(WM_APP + 12)
 
 #define IDC_STATIC                      -1
 

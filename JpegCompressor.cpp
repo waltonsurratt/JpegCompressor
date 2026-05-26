@@ -25,17 +25,17 @@
 #define MAX_LOADSTRING 100
 
 // If these are already defined in your headers, these guards avoid redefinition errors.
-#ifndef WM_COMPRESS_PROGRESS
-#define WM_COMPRESS_PROGRESS (WM_APP + 2)
-#endif
-#ifndef WM_COMPRESS_DONE
-#define WM_COMPRESS_DONE     (WM_APP + 3)
-#endif
-
-// New message for per-file batch status updates
-#ifndef WM_BATCH_FILE_START
-#define WM_BATCH_FILE_START  (WM_APP + 50)
-#endif
+//#ifndef WM_COMPRESS_PROGRESS
+//#define WM_COMPRESS_PROGRESS (WM_APP + 2)
+//#endif
+//#ifndef WM_COMPRESS_DONE
+//#define WM_COMPRESS_DONE     (WM_APP + 3)
+//#endif
+//
+//// New message for per-file batch status updates
+//#ifndef WM_BATCH_FILE_START
+//#define WM_BATCH_FILE_START  (WM_APP + 50)
+//#endif
 
 // ------------------------------------------------------------
 // Global Variables
