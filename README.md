@@ -11,7 +11,7 @@ The library currently includes the following features:
 * Image Quality slider bar (linked to compression rate)
 * Drag-and-drop feature
 
-<img width="370" height="241" alt="image" src="https://github.com/user-attachments/assets/1c500643-21fd-4b1f-9705-1fc6ae953608" />
+<img width="612" height="398" alt="image" src="https://github.com/user-attachments/assets/767d8af4-32e6-4669-8d4a-06c9d5ee0996" />
 
 
 ## Future Changes
