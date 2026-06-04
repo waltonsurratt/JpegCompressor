@@ -20,10 +20,6 @@ The library currently includes the following features:
 * Non-UI blocking compression process
 * Check-for-updates feature
 
-
-## Documentation
-_Work in progress_
-
 ## Installing
 ### Windows
 Download the latest [JpegCompressor installer](https://github.com/waltonsurratt/JpegCompressor/releases/latest). `JpegCompressor_x86.exe` is 32-bit. For 64-bit systems, download `JpegCompressor_x64.exe`. All external libraries during build are statically linked, and so the executables act as independent entities and should launch without further setup or installation files required.
