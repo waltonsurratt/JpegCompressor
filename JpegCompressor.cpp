@@ -1,4 +1,4 @@
-// Application: JPEG Compressor
+﻿// Application: JPEG Compressor
 // Developer: Walton Surratt
 // Copyright (c) 2026 Surratt Solutions. All rights reserved.
 // 
@@ -16,6 +16,7 @@
 #include <fstream>
 #include <jpeglib.h>
 #include <setjmp.h>
+#include <cstdint> // make sure this is at top 
 
 #include "framework.h"
 #include "JpegCompressor.h"
@@ -24,45 +25,27 @@
 
 #define MAX_LOADSTRING 100
 
-// If these are already defined in your headers, these guards avoid redefinition errors.
-//#ifndef WM_COMPRESS_PROGRESS
-//#define WM_COMPRESS_PROGRESS (WM_APP + 2)
-//#endif
-//#ifndef WM_COMPRESS_DONE
-//#define WM_COMPRESS_DONE     (WM_APP + 3)
-//#endif
-//
-//// New message for per-file batch status updates
-//#ifndef WM_BATCH_FILE_START
-//#define WM_BATCH_FILE_START  (WM_APP + 50)
-//#endif
-
 // ------------------------------------------------------------
-// Global Variables
+// Globals (unchanged)
 // ------------------------------------------------------------
-HINSTANCE hInst;                                // current instance
-WCHAR szTitle[MAX_LOADSTRING];                  // The title bar text
-WCHAR szWindowClass[MAX_LOADSTRING];            // the main window class name
-HWND hStatusBar = nullptr;                      // Status bar handle
-HWND hProgressBar = nullptr;                    // Progress bar handle
-HWND hBtnStart = nullptr;                       // Start button handle
+HINSTANCE hInst;
+WCHAR szTitle[MAX_LOADSTRING];
+WCHAR szWindowClass[MAX_LOADSTRING];
 
-// Input selection display (fixes missing hEditInputFile usage)
-HWND hEditInputFile = nullptr;                  // Shows selected file or "<Multiple Files Selected>"
+HWND hStatusBar = nullptr;
+HWND hProgressBar = nullptr;
+HWND hBtnStart = nullptr;
+HWND hEditInputFile = nullptr;
 
-// Selected JPEG files to compress (batch)
 std::vector<std::wstring> g_InputFiles;
-
-// Output folder details
 std::wstring g_OutputFolder;
-HWND hEditOutputFolder = nullptr;
 
-// Slider bar details
+HWND hEditOutputFolder = nullptr;
 HWND hQualitySlider = nullptr;
-int g_QualityValue = 80;   // Default quality (80%)
 HWND hQualityValueLabel = nullptr;
 
-// Compression state
+int g_QualityValue = 80;
+
 std::atomic<bool> g_CompressInProgress(false);
 HWND g_hMainWnd = nullptr;
 
@@ -85,6 +68,112 @@ static void JpegErrorExit(j_common_ptr cinfo)
 {
     JpegErrorMgr* err = (JpegErrorMgr*)cinfo->err;
     longjmp(err->setjmp_buffer, 1);
+}
+
+// ------------------------------------------------------------
+// ✅ EXIF ORIENTATION
+// ------------------------------------------------------------
+int GetExifOrientation(j_decompress_ptr dinfo)
+{
+    for (jpeg_saved_marker_ptr marker = dinfo->marker_list;
+        marker != nullptr;
+        marker = marker->next)
+    {
+        if (marker->marker == (JPEG_APP0 + 1) && marker->data_length > 6)
+        {
+            const unsigned char* data = marker->data;
+
+            if (memcmp(data, "Exif\0\0", 6) != 0)
+                continue;
+
+            const unsigned char* tiff = data + 6;
+            bool little = tiff[0] == 'I';
+
+            auto read16 = [&](const unsigned char* p) -> uint16_t
+                {
+                    return little ? (p[0] | (p[1] << 8))
+                        : (p[1] | (p[0] << 8));
+                };
+
+            auto read32 = [&](const unsigned char* p) -> uint32_t
+                {
+                    return little
+                        ? (p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24))
+                        : (p[3] | (p[2] << 8) | (p[1] << 16) | (p[0] << 24));
+                };
+
+            uint32_t ifdOffset = read32(tiff + 4);
+            const unsigned char* ifd = tiff + ifdOffset;
+
+            uint16_t count = read16(ifd);
+
+            for (int i = 0; i < count; i++)
+            {
+                const unsigned char* entry = ifd + 2 + (i * 12);
+                if (read16(entry) == 0x0112)
+                    return read16(entry + 8);
+            }
+        }
+    }
+    return 1;
+}
+
+// ------------------------------------------------------------
+// ✅ APPLY ROTATION
+// ------------------------------------------------------------
+std::vector<unsigned char> ApplyOrientation(
+    const std::vector<unsigned char>& src,
+    int width,
+    int height,
+    int channels,
+    int orientation,
+    int& outW,
+    int& outH)
+{
+    outW = width;
+    outH = height;
+
+    if (orientation == 1)
+        return src;
+
+    std::vector<unsigned char> dst;
+
+    switch (orientation)
+    {
+    case 6:
+        outW = height; outH = width;
+        dst.resize(outW * outH * channels);
+        for (int y = 0; y < height; y++)
+            for (int x = 0; x < width; x++)
+                memcpy(&dst[((x * outW) + (outW - y - 1)) * channels],
+                    &src[(y * width + x) * channels],
+                    channels);
+        break;
+
+    case 3:
+        dst.resize(width * height * channels);
+        for (int y = 0; y < height; y++)
+            for (int x = 0; x < width; x++)
+                memcpy(&dst[((height - y - 1) * width + (width - x - 1)) * channels],
+                    &src[(y * width + x) * channels],
+                    channels);
+        break;
+
+    case 8:
+        outW = height; outH = width;
+        dst.resize(outW * outH * channels);
+        for (int y = 0; y < height; y++)
+            for (int x = 0; x < width; x++)
+                memcpy(&dst[((outH - x - 1) * outW + y) * channels],
+                    &src[(y * width + x) * channels],
+                    channels);
+        break;
+
+    default:
+        return src;
+    }
+
+    return dst;
 }
 
 // ------------------------------------------------------------
@@ -231,9 +320,7 @@ bool GetExecutableVersionString(std::wstring& outVersion)
 }
 
 // ------------------------------------------------------------
-// Compress single JPEG file using libjpeg-turbo
-// NOTE: This worker no longer flips g_CompressInProgress or posts WM_COMPRESS_DONE.
-// That is managed by the batch controller.
+// ✅ COMPRESS WORKER (MODIFIED)
 // ------------------------------------------------------------
 void CompressJpegWorker(
     std::wstring inputPath,
@@ -241,120 +328,108 @@ void CompressJpegWorker(
     int quality)
 {
     std::ifstream inFile(inputPath, std::ios::binary);
-    if (!inFile)
-        return;
+    if (!inFile) return;
 
     std::vector<unsigned char> inputBuffer(
         (std::istreambuf_iterator<char>(inFile)),
-        std::istreambuf_iterator<char>()
-    );
-
-    inFile.close();
-
-    if (inputBuffer.empty())
-        return;
+        std::istreambuf_iterator<char>());
 
     jpeg_decompress_struct dinfo{};
-    jpeg_compress_struct   cinfo{};
+    jpeg_compress_struct cinfo{};
+    JpegErrorMgr derr{}, cerr{};
 
-    JpegErrorMgr derr{};
-    JpegErrorMgr cerr{};
-
-    std::vector<JSAMPLE> scanlineBuffer;
-    JSAMPROW row_pointer[1]{ nullptr };
-
-    unsigned char* outBuffer = nullptr;
-    unsigned long  outSize = 0;
-
-    int totalRows = 0;
-    int rowStride = 0;
-
-    bool decompressorCreated = false;
-    bool compressorCreated = false;
-
-    // Setup decompressor
     dinfo.err = jpeg_std_error(&derr.pub);
     derr.pub.error_exit = JpegErrorExit;
 
     if (setjmp(derr.setjmp_buffer))
-        goto cleanup;
+        return;
 
     jpeg_create_decompress(&dinfo);
-    decompressorCreated = true;
 
+    // ✅ Capture EXIF
+    jpeg_save_markers(&dinfo, JPEG_APP0 + 1, 0xFFFF);
+    
+    /*if (inputBuffer.size() > ULONG_MAX)
+    {
+         File too large for libjpeg API
+        return;
+    }*/
+
+    //jpeg_mem_src(&dinfo, inputBuffer.data(), inputBuffer.size());
     jpeg_mem_src(
         &dinfo,
         inputBuffer.data(),
         static_cast<unsigned long>(inputBuffer.size())
     );
-
     jpeg_read_header(&dinfo, TRUE);
     jpeg_start_decompress(&dinfo);
 
-    totalRows = static_cast<int>(dinfo.output_height);
-    rowStride = dinfo.output_width * dinfo.output_components;
+    int width = dinfo.output_width;
+    int height = dinfo.output_height;
+    int channels = dinfo.output_components;
 
-    scanlineBuffer.resize(rowStride);
-    row_pointer[0] = scanlineBuffer.data();
+    std::vector<unsigned char> image(width * height * channels);
 
-    // Setup compressor (memory destination)
+    while (dinfo.output_scanline < dinfo.output_height)
+    {
+        unsigned char* row = &image[dinfo.output_scanline * width * channels];
+        jpeg_read_scanlines(&dinfo, &row, 1);
+
+        int progress = (int)((dinfo.output_scanline * 100) / height);
+        PostMessage(g_hMainWnd, WM_COMPRESS_PROGRESS, progress, 0);
+    }
+
+    int orientation = GetExifOrientation(&dinfo);
+
+    int newW, newH;
+    std::vector<unsigned char> finalImage =
+        ApplyOrientation(image, width, height, channels,
+            orientation, newW, newH);
+
+    jpeg_finish_decompress(&dinfo);
+    jpeg_destroy_decompress(&dinfo);
+
+    // Compress
     cinfo.err = jpeg_std_error(&cerr.pub);
     cerr.pub.error_exit = JpegErrorExit;
 
     if (setjmp(cerr.setjmp_buffer))
-        goto cleanup;
+        return;
 
     jpeg_create_compress(&cinfo);
-    compressorCreated = true;
 
+    unsigned char* outBuffer = nullptr;
+    unsigned long outSize = 0;
     jpeg_mem_dest(&cinfo, &outBuffer, &outSize);
 
-    cinfo.image_width = dinfo.output_width;
-    cinfo.image_height = dinfo.output_height;
-    cinfo.input_components = dinfo.output_components;
-    cinfo.in_color_space = dinfo.out_color_space;
+    cinfo.image_width = newW;
+    cinfo.image_height = newH;
+    cinfo.input_components = channels;
+    cinfo.in_color_space = JCS_RGB;
 
     jpeg_set_defaults(&cinfo);
     jpeg_set_quality(&cinfo, quality, TRUE);
+
     jpeg_start_compress(&cinfo, TRUE);
 
-    // Scanline loop with REAL progress
-    while (dinfo.output_scanline < dinfo.output_height)
+    int stride = newW * channels;
+
+    while (cinfo.next_scanline < cinfo.image_height)
     {
-        jpeg_read_scanlines(&dinfo, row_pointer, 1);
-        jpeg_write_scanlines(&cinfo, row_pointer, 1);
-
-        int progress =
-            static_cast<int>(
-                (dinfo.output_scanline * 100) / totalRows
-                );
-
-        PostMessage(g_hMainWnd, WM_COMPRESS_PROGRESS, progress, 0);
+        unsigned char* row = &finalImage[cinfo.next_scanline * stride];
+        jpeg_write_scanlines(&cinfo, &row, 1);
     }
 
     jpeg_finish_compress(&cinfo);
-    jpeg_finish_decompress(&dinfo);
 
-    // Write output JPEG
-    {
-        // FIX: use inputPath/outputFolder provided to this worker
-        std::wstring outPath = MakeMiniOutputPath(inputPath, outputFolder);
-        std::ofstream outFile(outPath, std::ios::binary);
-        if (outFile && outBuffer && outSize > 0)
-        {
-            outFile.write(reinterpret_cast<char*>(outBuffer), outSize);
-        }
-    }
+    std::wstring outPath = MakeMiniOutputPath(inputPath, outputFolder);
+    std::ofstream outFile(outPath, std::ios::binary);
 
-cleanup:
-    if (decompressorCreated)
-        jpeg_destroy_decompress(&dinfo);
+    if (outFile)
+        outFile.write((char*)outBuffer, outSize);
 
-    if (compressorCreated)
-        jpeg_destroy_compress(&cinfo);
-
-    if (outBuffer)
-        free(outBuffer);
+    jpeg_destroy_compress(&cinfo);
+    if (outBuffer) free(outBuffer);
 }
 
 // ------------------------------------------------------------
@@ -755,6 +830,45 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 
             std::thread worker(CompressBatchWorker, g_InputFiles, g_OutputFolder, g_QualityValue);
             worker.detach();
+        }
+        break;
+
+        case IDM_FILE_RESTART:
+        {
+            wchar_t exePath[MAX_PATH]{};
+
+            // Get current executable path
+            if (GetModuleFileNameW(nullptr, exePath, MAX_PATH))
+            {
+                // Start a new instance of the app
+                STARTUPINFOW si{};
+                PROCESS_INFORMATION pi{};
+
+                si.cb = sizeof(si);
+
+                if (CreateProcessW(
+                    exePath,          // Application name
+                    nullptr,          // Command line
+                    nullptr, nullptr, // Process/thread security
+                    FALSE,
+                    0,
+                    nullptr,
+                    nullptr,
+                    &si,
+                    &pi))
+                {
+                    // Close handles from CreateProcess
+                    CloseHandle(pi.hProcess);
+                    CloseHandle(pi.hThread);
+
+                    // Close this instance
+                    DestroyWindow(hWnd);
+                }
+                else
+                {
+                    MessageBoxW(hWnd, L"Failed to restart application.", L"Error", MB_ICONERROR);
+                }
+            }
         }
         break;
 
