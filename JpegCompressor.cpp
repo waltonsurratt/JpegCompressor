@@ -16,7 +16,7 @@
 #include <fstream>
 #include <jpeglib.h>
 #include <setjmp.h>
-#include <cstdint> // make sure this is at top 
+#include <cstdint>
 
 #include "framework.h"
 #include "JpegCompressor.h"
@@ -179,26 +179,6 @@ std::vector<unsigned char> ApplyOrientation(
 // ------------------------------------------------------------
 // HELPER FUNCTIONS
 // ------------------------------------------------------------
-int SnapQuality(int value)
-{
-    const int snapValues[] = { 60, 75, 85, 95 };
-    const int count = sizeof(snapValues) / sizeof(snapValues[0]);
-
-    int closest = snapValues[0];
-    int minDiff = abs(value - snapValues[0]);
-
-    for (int i = 1; i < count; ++i)
-    {
-        int diff = abs(value - snapValues[i]);
-        if (diff < minDiff)
-        {
-            minDiff = diff;
-            closest = snapValues[i];
-        }
-    }
-    return closest;
-}
-
 // Generates an output path for the compressed image based on the input file name and output folder.
 std::wstring MakeMiniOutputPath(
     const std::wstring& inputPath,
@@ -681,7 +661,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             hInst,
             nullptr);
 
-        SendMessage(hQualitySlider, TBM_SETRANGE, TRUE, MAKELPARAM(0, 100));
+        SendMessage(hQualitySlider, TBM_SETRANGE, TRUE, MAKELPARAM(1, 100));
         SendMessage(hQualitySlider, TBM_SETPOS, TRUE, g_QualityValue);
         SendMessage(hQualitySlider, TBM_SETTICFREQ, 10, 0);
 
@@ -890,9 +870,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     {
         if ((HWND)lParam == hQualitySlider)
         {
+			// Get slider position and update quality value
             g_QualityValue = (int)SendMessage(hQualitySlider, TBM_GETPOS, 0, 0);
-            g_QualityValue = SnapQuality(g_QualityValue);
-            SendMessage(hQualitySlider, TBM_SETPOS, TRUE, g_QualityValue);
+
+            // Clamp to 1–100 just to be safe
+            if (g_QualityValue < 1) g_QualityValue = 1;
+            if (g_QualityValue > 100) g_QualityValue = 100;
+
 
             std::wstring labelText = std::to_wstring(g_QualityValue) + L"%";
             SetWindowTextW(hQualityValueLabel, labelText.c_str());
