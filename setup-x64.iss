@@ -22,8 +22,9 @@ AppUpdatesURL={#MyAppURL}
 AppCopyright=Copyright (C) 2026 Surratt Solutions
 VersionInfoCopyright=Copyright (C) 2026 Surratt Solutions
 VersionInfoVersion=1.2.3.0
-DefaultDirName={autopf}\{#MyAppName}
+DefaultDirName={autopf}\SurrattSolutions\{#MyAppName}
 UninstallDisplayIcon={app}\{#MyAppExeName}
+UninstallDisplayName=JpegCompressor (64-bit)
 ; "ArchitecturesAllowed=x64compatible" specifies that Setup cannot run
 ; on anything but x64 and Windows 11 on Arm.
 ArchitecturesAllowed=x64compatible

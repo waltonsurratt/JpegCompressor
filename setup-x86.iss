@@ -22,9 +22,10 @@ AppUpdatesURL={#MyAppURL}
 AppCopyright=Copyright (C) 2026 Surratt Solutions
 VersionInfoCopyright=Copyright (C) 2026 Surratt Solutions
 VersionInfoVersion=1.2.3.0
-DefaultDirName={autopf32}\{#MyAppName}
+DefaultDirName={autopf32}\SurrattSolutions\{#MyAppName}
 UsePreviousAppDir=no
 UninstallDisplayIcon={app}\{#MyAppExeName}
+UninstallDisplayName=JpegCompressor (32-bit)
 DisableProgramGroupPage=yes
 LicenseFile=C:\Users\tron\source\repos\JpegCompressor\LICENSE.txt
 ; Uncomment the following line to run in non administrative install mode (install for current user only).
