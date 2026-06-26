@@ -4,8 +4,8 @@
 // 
 // JpegCompressor.cpp : Defines the entry point for the application.
 
-#include <windows.h>   // MUST be first
-#include <commdlg.h>   // defines OPENFILENAMEW
+#include <windows.h>
+#include <commdlg.h>
 #include <shlobj.h>
 #include <string>
 #include <commctrl.h>
@@ -391,7 +391,7 @@ bool CompressJpegWorker(
         unsigned char* row = &image[dinfo.output_scanline * width * channels];
         jpeg_read_scanlines(&dinfo, &row, 1);
 
-        int progress = (int)((dinfo.output_scanline * 100) / height);
+        int progress = (int)((dinfo.output_scanline * 50) / height);
 
         // Only post when the percentage actually changes. Posting once per
         // scanline floods the window's message queue (thousands of messages
@@ -457,6 +457,18 @@ bool CompressJpegWorker(
 
         unsigned char* row = &finalImage[cinfo.next_scanline * stride];
         jpeg_write_scanlines(&cinfo, &row, 1);
+
+        // Second half of the bar tracks compression, so the bar reflects the
+        // whole per-file pipeline instead of sitting at 100% while encoding
+        // (which can take as long as decoding, especially at high quality)
+        // still has work left to do.
+        int progress = 50 + (int)((cinfo.next_scanline * 50) / cinfo.image_height);
+
+        if (progress != lastPostedProgress)
+        {
+            PostMessage(g_hMainWnd, WM_COMPRESS_PROGRESS, progress, 0);
+            lastPostedProgress = progress;
+        }
     }
 
     jpeg_finish_compress(&cinfo);
