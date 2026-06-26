@@ -47,6 +47,7 @@ HWND hQualityValueLabel = nullptr;
 int g_QualityValue = 80;
 
 std::atomic<bool> g_CompressInProgress(false);
+std::atomic<bool> g_CancelRequested(false);
 HWND g_hMainWnd = nullptr;
 
 // Drag-and-drop visual state
@@ -200,16 +201,39 @@ std::wstring MakeMiniOutputPath(
     return outputFolder + L"\\" + filename + L"_mini.jpg";
 }
 
-// Updates the enabled/disabled state of the Start button based on whether both input and output paths are set.
+// Updates the Start/Cancel button's caption and enabled state based on current app state.
+// This is the single place that decides what the button looks like, so every code
+// path (start, cancel, completion) stays in sync.
 void UpdateStartButtonState()
 {
-    bool canStart =
-        !g_InputFiles.empty() &&
-        !g_OutputFolder.empty() &&
-        !g_CompressInProgress;
+    if (!hBtnStart)
+        return;
 
-    if (hBtnStart)
+    if (g_CompressInProgress)
+    {
+        if (g_CancelRequested)
+        {
+            // Cancel has already been clicked; disable briefly so the user can't
+            // queue up repeated cancel requests while the worker thread unwinds.
+            SetWindowTextW(hBtnStart, L"Cancelling...");
+            EnableWindow(hBtnStart, FALSE);
+        }
+        else
+        {
+            // A compression batch is running - the button now acts as Cancel.
+            SetWindowTextW(hBtnStart, L"Cancel");
+            EnableWindow(hBtnStart, TRUE);
+        }
+    }
+    else
+    {
+        bool canStart =
+            !g_InputFiles.empty() &&
+            !g_OutputFolder.empty();
+
+        SetWindowTextW(hBtnStart, L"Start");
         EnableWindow(hBtnStart, canStart);
+    }
 }
 
 // Validates if the given file path has a JPEG extension (.jpg, .jpeg, .jpe).
@@ -302,13 +326,16 @@ bool GetExecutableVersionString(std::wstring& outVersion)
 // ------------------------------------------------------------
 // ✅ COMPRESS WORKER (MODIFIED)
 // ------------------------------------------------------------
-void CompressJpegWorker(
+// Returns true if the file was handled to completion (including the case where
+// it failed for an unrelated reason, e.g. a bad JPEG); returns false only when
+// the user cancelled mid-file, so the batch controller can stop immediately.
+bool CompressJpegWorker(
     std::wstring inputPath,
     std::wstring outputFolder,
     int quality)
 {
     std::ifstream inFile(inputPath, std::ios::binary);
-    if (!inFile) return;
+    if (!inFile) return true;
 
     std::vector<unsigned char> inputBuffer(
         (std::istreambuf_iterator<char>(inFile)),
@@ -322,13 +349,13 @@ void CompressJpegWorker(
     derr.pub.error_exit = JpegErrorExit;
 
     if (setjmp(derr.setjmp_buffer))
-        return;
+        return true;
 
     jpeg_create_decompress(&dinfo);
 
     // ✅ Capture EXIF
     jpeg_save_markers(&dinfo, JPEG_APP0 + 1, 0xFFFF);
-    
+
     /*if (inputBuffer.size() > ULONG_MAX)
     {
          File too large for libjpeg API
@@ -350,13 +377,32 @@ void CompressJpegWorker(
 
     std::vector<unsigned char> image(width * height * channels);
 
+    int lastPostedProgress = -1;
+
     while (dinfo.output_scanline < dinfo.output_height)
     {
+        if (g_CancelRequested)
+        {
+            // Abort cleanly mid-decompress - nothing has been written to disk yet.
+            jpeg_destroy_decompress(&dinfo);
+            return false;
+        }
+
         unsigned char* row = &image[dinfo.output_scanline * width * channels];
         jpeg_read_scanlines(&dinfo, &row, 1);
 
         int progress = (int)((dinfo.output_scanline * 100) / height);
-        PostMessage(g_hMainWnd, WM_COMPRESS_PROGRESS, progress, 0);
+
+        // Only post when the percentage actually changes. Posting once per
+        // scanline floods the window's message queue (thousands of messages
+        // for a large image), and since the Cancel button's click also has
+        // to travel through that same queue, a flooded queue delays the
+        // click handler itself - which is what made cancel look unresponsive.
+        if (progress != lastPostedProgress)
+        {
+            PostMessage(g_hMainWnd, WM_COMPRESS_PROGRESS, progress, 0);
+            lastPostedProgress = progress;
+        }
     }
 
     int orientation = GetExifOrientation(&dinfo);
@@ -369,12 +415,15 @@ void CompressJpegWorker(
     jpeg_finish_decompress(&dinfo);
     jpeg_destroy_decompress(&dinfo);
 
+    if (g_CancelRequested)
+        return false;
+
     // Compress
     cinfo.err = jpeg_std_error(&cerr.pub);
     cerr.pub.error_exit = JpegErrorExit;
 
     if (setjmp(cerr.setjmp_buffer))
-        return;
+        return true;
 
     jpeg_create_compress(&cinfo);
 
@@ -396,6 +445,16 @@ void CompressJpegWorker(
 
     while (cinfo.next_scanline < cinfo.image_height)
     {
+        if (g_CancelRequested)
+        {
+            // Abort cleanly mid-compress - the output file is only ever opened
+            // and written further down, once the full buffer is ready, so there
+            // is no partial/corrupt file on disk to clean up.
+            jpeg_destroy_compress(&cinfo);
+            if (outBuffer) free(outBuffer);
+            return false;
+        }
+
         unsigned char* row = &finalImage[cinfo.next_scanline * stride];
         jpeg_write_scanlines(&cinfo, &row, 1);
     }
@@ -410,6 +469,8 @@ void CompressJpegWorker(
 
     jpeg_destroy_compress(&cinfo);
     if (outBuffer) free(outBuffer);
+
+    return true;
 }
 
 // ------------------------------------------------------------
@@ -421,11 +482,15 @@ void CompressBatchWorker(
     int quality)
 {
     const size_t total = files.size();
+    bool cancelled = false;
 
     for (size_t i = 0; i < total; ++i)
     {
-        if (!g_CompressInProgress)
+        if (!g_CompressInProgress || g_CancelRequested)
+        {
+            cancelled = true;
             break;
+        }
 
         // Post per-file status update
         std::wstring fileName = files[i];
@@ -441,11 +506,21 @@ void CompressBatchWorker(
         // Reset progress for the new file
         PostMessage(g_hMainWnd, WM_COMPRESS_PROGRESS, 0, 0);
 
-        CompressJpegWorker(files[i], outputFolder, quality);
+        if (!CompressJpegWorker(files[i], outputFolder, quality))
+        {
+            // The single-file worker bailed out because of a cancel request -
+            // stop the batch right away instead of waiting for the next loop check.
+            cancelled = true;
+            break;
+        }
     }
 
+    if (g_CancelRequested)
+        cancelled = true;
+
+    // wParam carries the outcome: 1 = cancelled by the user, 0 = ran to completion.
     if (IsWindow(g_hMainWnd))
-        PostMessage(g_hMainWnd, WM_COMPRESS_DONE, 0, 0);
+        PostMessage(g_hMainWnd, WM_COMPRESS_DONE, cancelled ? 1 : 0, 0);
 }
 
 // Forward declarations
@@ -783,7 +858,21 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         case IDC_BTN_START:
         {
             if (g_CompressInProgress)
+            {
+                // The button is currently in "Cancel" mode. Ignore repeat
+                // clicks once a cancel is already in flight.
+                if (!g_CancelRequested)
+                {
+                    g_CancelRequested = true;
+
+                    // Immediate feedback so the user sees the cancel register
+                    // right away, even though the worker thread may take a
+                    // moment to unwind out of the current file.
+                    SendMessage(hStatusBar, SB_SETTEXT, 0, (LPARAM)L"Cancelling...");
+                    UpdateStartButtonState();
+                }
                 break;
+            }
 
             // Error handling for invalid output directory (requested)
             if (!IsValidOutputDirectory(g_OutputFolder))
@@ -801,12 +890,16 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 break;
 
             g_CompressInProgress = true;
-            EnableWindow(hBtnStart, FALSE);
+            g_CancelRequested = false;
             SendMessage(hProgressBar, PBM_SETPOS, 0, 0);
 
             g_CurrentFileStatusBase.clear();
             SendMessage(hStatusBar, SB_SETTEXT, 0, (LPARAM)L"Starting..."
             );
+
+            // Flip the button into Cancel mode right away, before the
+            // worker thread is even spun up.
+            UpdateStartButtonState();
 
             std::thread worker(CompressBatchWorker, g_InputFiles, g_OutputFolder, g_QualityValue);
             worker.detach();
@@ -870,7 +963,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     {
         if ((HWND)lParam == hQualitySlider)
         {
-			// Get slider position and update quality value
+            // Get slider position and update quality value
             g_QualityValue = (int)SendMessage(hQualitySlider, TBM_GETPOS, 0, 0);
 
             // Clamp to 1–100 just to be safe
@@ -1014,13 +1107,27 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 
     case WM_COMPRESS_DONE:
     {
-        g_CompressInProgress = false;
+        bool wasCancelled = (wParam != 0);
 
-        SendMessage(hProgressBar, PBM_SETPOS, 100, 0);
-        SendMessage(hStatusBar, SB_SETTEXT, 0, (LPARAM)L"Compression complete");
+        g_CompressInProgress = false;
+        g_CancelRequested = false;
+
+        if (wasCancelled)
+        {
+            // Clean, immediate reset so there's no lingering progress from
+            // the cancelled run.
+            SendMessage(hProgressBar, PBM_SETPOS, 0, 0);
+            SendMessage(hStatusBar, SB_SETTEXT, 0, (LPARAM)L"Compression cancelled");
+        }
+        else
+        {
+            SendMessage(hProgressBar, PBM_SETPOS, 100, 0);
+            SendMessage(hStatusBar, SB_SETTEXT, 0, (LPARAM)L"Compression complete");
+        }
 
         g_CurrentFileStatusBase.clear();
 
+        // Flip the button back to Start mode.
         UpdateStartButtonState();
     }
     break;
