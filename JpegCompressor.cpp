@@ -4,8 +4,8 @@
 // 
 // JpegCompressor.cpp : Defines the entry point for the application.
 
-#include <windows.h>
-#include <commdlg.h>
+#include <windows.h>   // MUST be first
+#include <commdlg.h>   // defines OPENFILENAMEW
 #include <shlobj.h>
 #include <string>
 #include <commctrl.h>
@@ -799,14 +799,19 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         {
         case IDC_BTN_CHOOSE_FILE:
         {
-            wchar_t fileBuffer[32768] = { 0 };
+            // Heap-allocate this buffer instead of putting it on the stack.
+            // GetOpenFileNameW with OFN_ALLOWMULTISELECT needs a buffer large
+            // enough to hold many concatenated, double-null-terminated paths,
+            // and 32768 wchar_t (64 KB) as a raw stack array is exactly what
+            // trips VS's /analyze stack-usage warning (C6262) for this function.
+            std::vector<wchar_t> fileBuffer(32768, L'\0');
 
             OPENFILENAMEW ofn{};
             ofn.lStructSize = sizeof(ofn);
             ofn.hwndOwner = hWnd;
             ofn.lpstrFilter = L"JPEG Images (*.jpg;*.jpeg)\0*.jpg;*.jpeg\0";
-            ofn.lpstrFile = fileBuffer;
-            ofn.nMaxFile = _countof(fileBuffer);
+            ofn.lpstrFile = fileBuffer.data();
+            ofn.nMaxFile = (DWORD)fileBuffer.size();
             ofn.Flags = OFN_EXPLORER | OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_ALLOWMULTISELECT;
             ofn.lpstrTitle = L"Select JPEG Images";
 
@@ -814,7 +819,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             {
                 g_InputFiles.clear();
 
-                wchar_t* ptr = fileBuffer;
+                wchar_t* ptr = fileBuffer.data();
                 std::wstring directory = ptr;
                 ptr += directory.length() + 1;
 
