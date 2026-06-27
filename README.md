@@ -19,7 +19,7 @@ The tool currently includes the following features:
 * ~~Batch file processing~~
 * ~~Cancellation support / Cancel Button (after compression begins)~~
 * ~~Non-UI blocking compression process~~
-* Memory optimization for JPEG decode process (speed up the decode by a few 100ms)
+* Memory optimization for JPEG decode process (speed up the decode by a 200ms+ per file)
 * Thread optimization (faster encodes for batch files)
 * Check-for-updates feature
 
