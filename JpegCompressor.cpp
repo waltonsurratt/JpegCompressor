@@ -3,15 +3,17 @@
 // Copyright (c) 2026 Surratt Solutions. All rights reserved.
 // 
 // JpegCompressor.cpp : Defines the entry point for the application.
-
-#include <windows.h>   // MUST be first
-#include <commdlg.h>   // defines OPENFILENAMEW
+#define NOMINMAX
+#include <windows.h>
+#include <commdlg.h>
 #include <shlobj.h>
 #include <string>
 #include <commctrl.h>
 #include <turbojpeg.h>
 #include <thread>
 #include <atomic>
+#include <mutex>
+#include <chrono>
 #include <vector>
 #include <fstream>
 #include <jpeglib.h>
@@ -24,6 +26,12 @@
 #pragma comment(lib, "comctl32.lib")
 
 #define MAX_LOADSTRING 100
+
+// Largest batch of JPEGs that can be selected/queued at once. This bounds
+// the multi-select file dialog's buffer (below) to a known, finite worst
+// case instead of letting a pathologically large selection grow it without
+// limit.
+constexpr size_t kMaxBatchFiles = 8192;
 
 // ------------------------------------------------------------
 // Globals (unchanged)
@@ -324,15 +332,25 @@ bool GetExecutableVersionString(std::wstring& outVersion)
 }
 
 // ------------------------------------------------------------
-// ✅ COMPRESS WORKER (MODIFIED)
+// ✅ COMPRESS WORKER (MODIFIED - memory optimized, parallel-safe progress)
 // ------------------------------------------------------------
 // Returns true if the file was handled to completion (including the case where
 // it failed for an unrelated reason, e.g. a bad JPEG); returns false only when
 // the user cancelled mid-file, so the batch controller can stop immediately.
+//
+// progressSlot: when running as part of a parallel batch, each worker thread
+// owns one atomic<int> "slot" that this function updates instead of posting
+// window messages directly. With several threads compressing at once, having
+// every thread post its own UI message on every scanline would flood the
+// message queue (the very problem the original per-scanline posting logic
+// was already trying to avoid for a single file); aggregating slots into one
+// throttled UI update is handled by the batch controller below. Pass nullptr
+// if no progress reporting is needed.
 bool CompressJpegWorker(
-    std::wstring inputPath,
-    std::wstring outputFolder,
-    int quality)
+    const std::wstring& inputPath,
+    const std::wstring& outputFolder,
+    int quality,
+    std::atomic<int>* progressSlot = nullptr)
 {
     std::ifstream inFile(inputPath, std::ios::binary);
     if (!inFile) return true;
@@ -340,6 +358,7 @@ bool CompressJpegWorker(
     std::vector<unsigned char> inputBuffer(
         (std::istreambuf_iterator<char>(inFile)),
         std::istreambuf_iterator<char>());
+    inFile.close(); // bytes are in memory now; release the OS handle right away
 
     jpeg_decompress_struct dinfo{};
     jpeg_compress_struct cinfo{};
@@ -349,20 +368,21 @@ bool CompressJpegWorker(
     derr.pub.error_exit = JpegErrorExit;
 
     if (setjmp(derr.setjmp_buffer))
+    {
+        // A libjpeg error during decompression longjmps straight back to
+        // here. dinfo has already been created on every path that can
+        // reach this branch (jpeg_create_decompress is the very next line,
+        // with nothing risky in between), so it must be torn down here
+        // rather than leaked.
+        jpeg_destroy_decompress(&dinfo);
         return true;
+    }
 
     jpeg_create_decompress(&dinfo);
 
     // ✅ Capture EXIF
     jpeg_save_markers(&dinfo, JPEG_APP0 + 1, 0xFFFF);
 
-    /*if (inputBuffer.size() > ULONG_MAX)
-    {
-         File too large for libjpeg API
-        return;
-    }*/
-
-    //jpeg_mem_src(&dinfo, inputBuffer.data(), inputBuffer.size());
     jpeg_mem_src(
         &dinfo,
         inputBuffer.data(),
@@ -375,7 +395,7 @@ bool CompressJpegWorker(
     int height = dinfo.output_height;
     int channels = dinfo.output_components;
 
-    std::vector<unsigned char> image(width * height * channels);
+    std::vector<unsigned char> image(static_cast<size_t>(width) * height * channels);
 
     int lastPostedProgress = -1;
 
@@ -388,32 +408,64 @@ bool CompressJpegWorker(
             return false;
         }
 
-        unsigned char* row = &image[dinfo.output_scanline * width * channels];
+        unsigned char* row = &image[static_cast<size_t>(dinfo.output_scanline) * width * channels];
         jpeg_read_scanlines(&dinfo, &row, 1);
 
         int progress = (int)((dinfo.output_scanline * 50) / height);
 
-        // Only post when the percentage actually changes. Posting once per
-        // scanline floods the window's message queue (thousands of messages
-        // for a large image), and since the Cancel button's click also has
-        // to travel through that same queue, a flooded queue delays the
-        // click handler itself - which is what made cancel look unresponsive.
+        // Only report when the percentage actually changes, to keep the
+        // update rate sane for very tall images.
         if (progress != lastPostedProgress)
         {
-            PostMessage(g_hMainWnd, WM_COMPRESS_PROGRESS, progress, 0);
+            if (progressSlot)
+                progressSlot->store(progress, std::memory_order_relaxed);
             lastPostedProgress = progress;
         }
     }
 
     int orientation = GetExifOrientation(&dinfo);
 
-    int newW, newH;
-    std::vector<unsigned char> finalImage =
-        ApplyOrientation(image, width, height, channels,
-            orientation, newW, newH);
-
     jpeg_finish_decompress(&dinfo);
     jpeg_destroy_decompress(&dinfo);
+
+    // ✅ MEMORY OPTIMIZATION: the compressed source bytes have now been fully
+    // consumed by libjpeg, so there's no need to keep holding them in memory
+    // for the rest of this file's processing (re-orientation + encoding).
+    // This matters most when several files are being compressed in parallel,
+    // since it keeps each thread's footprint closer to "one decoded image"
+    // rather than "one decoded image + its original compressed bytes".
+    inputBuffer.clear();
+    inputBuffer.shrink_to_fit();
+
+    if (g_CancelRequested)
+        return false;
+
+    int newW = width, newH = height;
+    bool needsRotation = (orientation == 3 || orientation == 6 || orientation == 8);
+
+    // ✅ MEMORY OPTIMIZATION: ApplyOrientation's "no transform" path used to
+    // return a full copy of the image by value even when nothing changed
+    // (the common case - most photos either have no EXIF rotation, or are
+    // already upright). That copy doubled peak memory for no benefit. Now
+    // we only allocate a second full-size buffer for the 3 orientations
+    // that actually require one, and otherwise point straight at the
+    // already-decoded buffer.
+    std::vector<unsigned char> rotatedImage;
+    std::vector<unsigned char>* finalImage = &image;
+
+    if (needsRotation)
+    {
+        rotatedImage = ApplyOrientation(image, width, height, channels,
+            orientation, newW, newH);
+
+        // The pre-rotation pixels are no longer needed once we have the
+        // rotated copy - release them now instead of letting two full-size
+        // image buffers sit in memory through the entire encode step below.
+        image.clear();
+        image.shrink_to_fit();
+
+        finalImage = &rotatedImage;
+    }
 
     if (g_CancelRequested)
         return false;
@@ -422,13 +474,26 @@ bool CompressJpegWorker(
     cinfo.err = jpeg_std_error(&cerr.pub);
     cerr.pub.error_exit = JpegErrorExit;
 
+    unsigned char* outBuffer = nullptr;
+    unsigned long outSize = 0;
+
     if (setjmp(cerr.setjmp_buffer))
+    {
+        // A libjpeg error during encoding longjmps straight back to here.
+        // By this point cinfo has been created and outBuffer may already
+        // hold a partially-filled buffer from jpeg_mem_dest - both need to
+        // be torn down here rather than leaked.
+        jpeg_destroy_compress(&cinfo);
+        if (outBuffer)
+        {
+            free(outBuffer);
+            outBuffer = nullptr;
+        }
         return true;
+    }
 
     jpeg_create_compress(&cinfo);
 
-    unsigned char* outBuffer = nullptr;
-    unsigned long outSize = 0;
     jpeg_mem_dest(&cinfo, &outBuffer, &outSize);
 
     cinfo.image_width = newW;
@@ -451,11 +516,15 @@ bool CompressJpegWorker(
             // and written further down, once the full buffer is ready, so there
             // is no partial/corrupt file on disk to clean up.
             jpeg_destroy_compress(&cinfo);
-            if (outBuffer) free(outBuffer);
+            if (outBuffer)
+            {
+                free(outBuffer);
+                outBuffer = nullptr;
+            }
             return false;
         }
 
-        unsigned char* row = &finalImage[cinfo.next_scanline * stride];
+        unsigned char* row = &(*finalImage)[static_cast<size_t>(cinfo.next_scanline) * stride];
         jpeg_write_scanlines(&cinfo, &row, 1);
 
         // Second half of the bar tracks compression, so the bar reflects the
@@ -466,7 +535,8 @@ bool CompressJpegWorker(
 
         if (progress != lastPostedProgress)
         {
-            PostMessage(g_hMainWnd, WM_COMPRESS_PROGRESS, progress, 0);
+            if (progressSlot)
+                progressSlot->store(progress, std::memory_order_relaxed);
             lastPostedProgress = progress;
         }
     }
@@ -480,9 +550,186 @@ bool CompressJpegWorker(
         outFile.write((char*)outBuffer, outSize);
 
     jpeg_destroy_compress(&cinfo);
-    if (outBuffer) free(outBuffer);
+    if (outBuffer)
+    {
+        free(outBuffer);
+        outBuffer = nullptr;
+    }
 
     return true;
+}
+
+// ------------------------------------------------------------
+// ✅ PARALLEL BATCH PROCESSING (NEW)
+// ------------------------------------------------------------
+// Shared, thread-safe state for one batch run. Aggregates per-file progress
+// from however many worker threads are active into a single overall
+// percentage and status line for the UI.
+struct BatchProgressState
+{
+    std::vector<std::atomic<int>> slotProgress; // 0-100 progress of whatever file each worker slot currently holds
+    std::vector<std::wstring> slotActiveFile;   // filename currently held by each slot (empty = idle)
+    std::mutex activeFileMutex;                 // guards slotActiveFile
+    std::atomic<size_t> filesCompleted{ 0 };
+    size_t filesTotal = 0;
+
+    BatchProgressState(size_t numSlots, size_t totalFiles)
+        : slotProgress(numSlots), slotActiveFile(numSlots), filesTotal(totalFiles)
+    {
+        // vector<atomic<int>>(count) default-constructs each slot, but
+        // std::atomic's default constructor doesn't guarantee a zeroed
+        // value before C++20 - set it explicitly so the ticker never sums
+        // an indeterminate value for a slot no worker has claimed yet.
+        for (auto& slot : slotProgress)
+            slot.store(0, std::memory_order_relaxed);
+    }
+};
+
+// Picks how many files to compress at once.
+//
+// Each in-flight file holds a full decoded RGB buffer in memory (and,
+// briefly, a second one for files that need EXIF rotation), so blindly
+// using every hardware thread could multiply peak memory by the core count
+// on a machine with many cores - a single batch of large photos could
+// exhaust RAM. This combines a hard ceiling with a check against actual
+// available physical memory, so the degree of parallelism backs off
+// automatically on machines that are low on RAM instead of just on core count.
+size_t GetWorkerCount(size_t fileCount)
+{
+    constexpr size_t kHardCap = 8; // never spin up more compression threads than this
+    constexpr unsigned long long kAssumedBytesPerFile = 150ULL * 1024 * 1024;
+    // ^ Conservative worst-case per-file estimate: a 24MP photo decodes to
+    // roughly 72MB as RGB; add headroom for a temporary rotated copy and
+    // the compressed-output buffer.
+
+    unsigned hw = std::thread::hardware_concurrency();
+    if (hw == 0) hw = 2; // hardware_concurrency() is allowed to return 0; fall back to a small default
+
+    size_t workers = std::min<size_t>(hw, kHardCap);
+
+    MEMORYSTATUSEX memStatus{};
+    memStatus.dwLength = sizeof(memStatus);
+    if (GlobalMemoryStatusEx(&memStatus))
+    {
+        size_t memoryAllowedWorkers =
+            static_cast<size_t>(memStatus.ullAvailPhys / kAssumedBytesPerFile);
+        workers = std::min(workers, std::max<size_t>(1, memoryAllowedWorkers));
+    }
+
+    workers = std::min(workers, fileCount); // never more workers than there is work
+    return std::max<size_t>(1, workers);
+}
+
+// One worker thread's loop: repeatedly claims the next not-yet-started file
+// from the shared file list (via an atomic index) and compresses it. Pulling
+// work from a shared index, rather than pre-assigning a fixed slice of files
+// to each thread, means a thread that finishes a small file quickly picks up
+// the next one immediately instead of sitting idle while another thread is
+// still working through a large one.
+void ParallelCompressionWorker(
+    size_t slotIndex,
+    std::atomic<size_t>& nextFileIndex,
+    const std::vector<std::wstring>& files,
+    const std::wstring& outputFolder,
+    int quality,
+    BatchProgressState& progress)
+{
+    for (;;)
+    {
+        if (g_CancelRequested)
+            break;
+
+        size_t idx = nextFileIndex.fetch_add(1, std::memory_order_relaxed);
+        if (idx >= files.size())
+            break;
+
+        {
+            std::lock_guard<std::mutex> lock(progress.activeFileMutex);
+            progress.slotActiveFile[slotIndex] = files[idx];
+        }
+        progress.slotProgress[slotIndex].store(0, std::memory_order_relaxed);
+
+        bool completed = CompressJpegWorker(files[idx], outputFolder, quality,
+            &progress.slotProgress[slotIndex]);
+
+        if (!completed)
+        {
+            // User cancelled mid-file - stop pulling new work on this thread.
+            break;
+        }
+
+        progress.slotProgress[slotIndex].store(100, std::memory_order_relaxed);
+        progress.filesCompleted.fetch_add(1, std::memory_order_relaxed);
+
+        {
+            std::lock_guard<std::mutex> lock(progress.activeFileMutex);
+            progress.slotActiveFile[slotIndex].clear();
+        }
+    }
+}
+
+// Periodically aggregates progress across all worker slots into a single
+// overall percentage and a human-readable status line, then posts both to
+// the UI thread. Centralizing this on a timer - instead of having every
+// worker thread post on every scanline, as the single-threaded version did -
+// keeps the number of UI messages constant no matter how many files are
+// compressing in parallel or how large they are.
+void ProgressTicker(std::atomic<bool>& running, BatchProgressState& progress)
+{
+    while (running.load(std::memory_order_relaxed))
+    {
+        int slotSum = 0;
+        for (auto& slot : progress.slotProgress)
+            slotSum += slot.load(std::memory_order_relaxed);
+
+        size_t completed = progress.filesCompleted.load(std::memory_order_relaxed);
+        int overallPercent = 0;
+        if (progress.filesTotal > 0)
+            overallPercent = (int)(((completed * 100) + slotSum) / progress.filesTotal);
+        if (overallPercent > 100) overallPercent = 100;
+
+        PostMessage(g_hMainWnd, WM_COMPRESS_PROGRESS, overallPercent, 0);
+
+        std::wstring statusText;
+        {
+            std::lock_guard<std::mutex> lock(progress.activeFileMutex);
+            size_t activeCount = 0;
+            std::wstring firstName;
+
+            for (auto& f : progress.slotActiveFile)
+            {
+                if (f.empty())
+                    continue;
+
+                activeCount++;
+                if (firstName.empty())
+                {
+                    size_t slash = f.find_last_of(L"\\/");
+                    firstName = (slash == std::wstring::npos) ? f : f.substr(slash + 1);
+                }
+            }
+
+            if (activeCount > 0)
+            {
+                statusText = L"Compressing " + firstName;
+                if (activeCount > 1)
+                    statusText += L" (+" + std::to_wstring(activeCount - 1) + L" more)";
+            }
+        }
+
+        if (!statusText.empty())
+        {
+            statusText += L" - " + std::to_wstring(completed) + L"/" +
+                std::to_wstring(progress.filesTotal) + L" done";
+
+            PostMessage(g_hMainWnd, WM_BATCH_FILE_START, 0, (LPARAM)new std::wstring(statusText));
+        }
+
+        if (completed >= progress.filesTotal || g_CancelRequested)
+            break;
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    }
 }
 
 // ------------------------------------------------------------
@@ -493,42 +740,54 @@ void CompressBatchWorker(
     std::wstring outputFolder,
     int quality)
 {
-    const size_t total = files.size();
-    bool cancelled = false;
+    const size_t totalFiles = files.size();
 
-    for (size_t i = 0; i < total; ++i)
+    if (totalFiles == 0)
     {
-        if (!g_CompressInProgress || g_CancelRequested)
-        {
-            cancelled = true;
-            break;
-        }
-
-        // Post per-file status update
-        std::wstring fileName = files[i];
-        size_t slash = fileName.find_last_of(L"\\/");
-        if (slash != std::wstring::npos)
-            fileName = fileName.substr(slash + 1);
-
-        std::wstring statusBase =
-            L"Processing (" + std::to_wstring(i + 1) + L"/" + std::to_wstring(total) + L"): " + fileName;
-
-        PostMessage(g_hMainWnd, WM_BATCH_FILE_START, 0, (LPARAM)new std::wstring(statusBase));
-
-        // Reset progress for the new file
-        PostMessage(g_hMainWnd, WM_COMPRESS_PROGRESS, 0, 0);
-
-        if (!CompressJpegWorker(files[i], outputFolder, quality))
-        {
-            // The single-file worker bailed out because of a cancel request -
-            // stop the batch right away instead of waiting for the next loop check.
-            cancelled = true;
-            break;
-        }
+        if (IsWindow(g_hMainWnd))
+            PostMessage(g_hMainWnd, WM_COMPRESS_DONE, 0, 0);
+        return;
     }
 
-    if (g_CancelRequested)
-        cancelled = true;
+    // ✅ PARALLELISM: instead of compressing files one at a time on this single
+    // worker thread, spin up a small pool of threads that pull from the same
+    // shared file list. GetWorkerCount() bounds the pool size by core count,
+    // a hard ceiling, and available RAM, so this speeds up multi-file batches
+    // without letting memory usage scale unchecked with file count or cores.
+    size_t numWorkers = GetWorkerCount(totalFiles);
+    BatchProgressState progress(numWorkers, totalFiles);
+
+    std::atomic<size_t> nextFileIndex(0);
+    std::atomic<bool> tickerRunning(true);
+
+    // The ticker owns all UI progress/status updates for this batch, at a
+    // fixed rate, regardless of how many compression threads are running.
+    std::thread ticker(ProgressTicker, std::ref(tickerRunning), std::ref(progress));
+
+    {
+        std::vector<std::thread> pool;
+        pool.reserve(numWorkers);
+
+        for (size_t i = 0; i < numWorkers; ++i)
+        {
+            pool.emplace_back(
+                ParallelCompressionWorker,
+                i,
+                std::ref(nextFileIndex),
+                std::cref(files),
+                std::cref(outputFolder),
+                quality,
+                std::ref(progress));
+        }
+
+        for (auto& t : pool)
+            t.join();
+    }
+
+    tickerRunning = false;
+    ticker.join();
+
+    bool cancelled = g_CancelRequested || (progress.filesCompleted.load() < totalFiles);
 
     // wParam carries the outcome: 1 = cancelled by the user, 0 = ran to completion.
     if (IsWindow(g_hMainWnd))
@@ -802,9 +1061,26 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             // Heap-allocate this buffer instead of putting it on the stack.
             // GetOpenFileNameW with OFN_ALLOWMULTISELECT needs a buffer large
             // enough to hold many concatenated, double-null-terminated paths,
-            // and 32768 wchar_t (64 KB) as a raw stack array is exactly what
-            // trips VS's /analyze stack-usage warning (C6262) for this function.
-            std::vector<wchar_t> fileBuffer(32768, L'\0');
+            // and a buffer sized for a large batch would blow the stack
+            // outright if it weren't heap-allocated (and trips VS's
+            // /analyze stack-usage warning, C6262, even at much smaller
+            // sizes than this).
+            //
+            // Sized for the worst case of kMaxBatchFiles files, each up to
+            // MAX_PATH characters, plus the shared directory prefix and a
+            // final extra null terminator. This sizes for the worst case
+            // up front rather than starting small and growing on demand:
+            // when the buffer is too small, GetOpenFileNameW reports the
+            // size it actually needs in only the first two bytes of the
+            // buffer (a 16-bit WORD), which tops out at 65,535 - nowhere
+            // near enough to reliably size a buffer for thousands of files,
+            // so that auto-grow mechanism can't be trusted for a batch
+            // this large.
+            const size_t kFileBufferChars =
+                static_cast<size_t>(MAX_PATH) + 1 +
+                kMaxBatchFiles * (static_cast<size_t>(MAX_PATH) + 1) + 1;
+
+            std::vector<wchar_t> fileBuffer(kFileBufferChars, L'\0');
 
             OPENFILENAMEW ofn{};
             ofn.lStructSize = sizeof(ofn);
@@ -832,8 +1108,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 }
                 else
                 {
-                    // Multiple files selected
-                    while (*ptr)
+                    // Multiple files selected. The buffer above is sized so
+                    // a selection of up to kMaxBatchFiles files always
+                    // fits, but guard the loop anyway rather than rely on
+                    // that invariant blindly.
+                    while (*ptr && g_InputFiles.size() < kMaxBatchFiles)
                     {
                         g_InputFiles.push_back(directory + L"\\" + ptr);
                         ptr += wcslen(ptr) + 1;
@@ -844,6 +1123,15 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 }
 
                 UpdateStartButtonState();
+            }
+            else if (CommDlgExtendedError() == FNERR_BUFFERTOOSMALL)
+            {
+                // The only way a buffer already sized for kMaxBatchFiles
+                // comes up short is a selection bigger than the batch limit.
+                std::wstring msg =
+                    L"A batch can hold at most " + std::to_wstring(kMaxBatchFiles) +
+                    L" files. Please select fewer files and try again.";
+                MessageBoxW(hWnd, msg.c_str(), L"Too Many Files Selected", MB_ICONWARNING | MB_OK);
             }
         }
         break;

@@ -3,7 +3,7 @@
 ; Non-commercial use only
 
 #define MyAppName "JpegCompressor"
-#define MyAppVersion "1.3.0"
+#define MyAppVersion "1.3.1"
 #define MyAppPublisher "Surratt Solutions"
 #define MyAppURL "https://wackywalt.com/"
 #define MyAppExeName "JpegCompressor-x64.exe"
@@ -21,7 +21,7 @@ AppSupportURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}
 AppCopyright=Copyright (C) 2026 Surratt Solutions
 VersionInfoCopyright=Copyright (C) 2026 Surratt Solutions
-VersionInfoVersion=1.3.0.0
+VersionInfoVersion=1.3.1.0
 DefaultDirName={autopf}\SurrattSolutions\{#MyAppName}
 UninstallDisplayIcon={app}\{#MyAppExeName}
 UninstallDisplayName=JpegCompressor (64-bit)
