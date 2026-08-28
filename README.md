@@ -2,7 +2,7 @@
 This a new project for a native, Win32-based Windows application written entirely in C/C++ that compresses JPEG images and offers flexibility with adjusting the quality level as desired and reducing overall file size. This application incorporates the library libjpeg-turbo for JPEG file compression and optimizes the performance of all changes.
 
 
-# Version: 1.3.0
+# Version: 1.3.1
 The tool currently includes the following features:
 * Batch file processing
 * Error handling for non-JPEG files
@@ -19,8 +19,8 @@ The tool currently includes the following features:
 * ~~Batch file processing~~
 * ~~Cancellation support / Cancel Button (after compression begins)~~
 * ~~Non-UI blocking compression process~~
-* Memory optimization for JPEG decode process (speed up the decode by a 200ms+ per file)
-* Thread optimization (faster encodes for batch files)
+* ~~Memory optimization for JPEG decode process (speed up the decode by a 200ms+ per file)~~
+* ~~Thread optimization (faster encodes for batch files)~~
 * Check-for-updates feature
 
 ## Installing
