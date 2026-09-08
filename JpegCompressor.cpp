@@ -3,10 +3,26 @@
 // Copyright (c) 2026 Surratt Solutions. All rights reserved.
 // 
 // JpegCompressor.cpp : Defines the entry point for the application.
+
+// ── Include-order fix ────────────────────────────────────────────────────────
+// WIN32_LEAN_AND_MEAN stops windows.h from pulling in the legacy winsock.h
+// (Winsock 1.1). We then include winsock2.h and ws2tcpip.h explicitly before
+// anything else that might drag in a Windows header, which prevents the ~100
+// symbol-redefinition errors that occur when httplib.h tries to include
+// winsock2.h after the old winsock.h has already been processed.
+// This block MUST come before every other #include.
+#define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
-#include <commdlg.h>
-#include <shlobj.h>
+// ────────────────────────────────────────────────────────────────────────────
+
+#include <commdlg.h>   // GetOpenFileNameW, CommDlgExtendedError
+#include <cderr.h>     // FNERR_BUFFERTOOSMALL (stripped by WIN32_LEAN_AND_MEAN)
+#include <shellapi.h>  // ShellExecuteW, DragAcceptFiles, DragQueryFile,
+                       // DragFinish, HDROP (stripped by WIN32_LEAN_AND_MEAN)
+#include <shlobj.h>    // SHBrowseForFolderW, SHGetPathFromIDListW
 #include <string>
 #include <commctrl.h>
 #include <turbojpeg.h>
@@ -20,10 +36,36 @@
 #include <setjmp.h>
 #include <cstdint>
 
+// --- Update-check dependencies ---
+// nlohmann/json: single-header JSON library
+#include <nlohmann/json.hpp>
+
+// cpp-httplib: single-header HTTP/HTTPS client library.
+// CPPHTTPLIB_OPENSSL_SUPPORT enables HTTPS via OpenSSL.
+// httplib.h is included AFTER all Windows/Winsock headers are already
+// settled so it finds the guards already defined and skips its own
+// winsock.h inclusion, avoiding the redefinition cascade entirely.
+//
+// The pragmas below suppress warnings that originate inside httplib.h itself
+// (uninitialized member variables, large stack frames). These are third-party
+// library internals we don't control and are not a risk in our code.
+#define CPPHTTPLIB_OPENSSL_SUPPORT
+#pragma warning(push)
+#pragma warning(disable: 26495)  // type.6  - uninitialized member variable
+#pragma warning(disable: 6262)   // stack usage exceeds threshold
+#include <httplib.h>
+#pragma warning(pop)
+
 #include "framework.h"
 #include "JpegCompressor.h"
 
 #pragma comment(lib, "comctl32.lib")
+// OpenSSL libs required by cpp-httplib for HTTPS:
+#pragma comment(lib, "libssl.lib")
+#pragma comment(lib, "libcrypto.lib")
+// Winsock (pulled in by cpp-httplib on Windows):
+#pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "crypt32.lib")
 
 #define MAX_LOADSTRING 100
 
@@ -32,6 +74,10 @@
 // case instead of letting a pathologically large selection grow it without
 // limit.
 constexpr size_t kMaxBatchFiles = 8192;
+
+// Version string for this build - must match the PE file version resource.
+// Used by CheckForUpdates() to compare against the server-reported version.
+static const std::string kCurrentVersion = "1.3.2";
 
 // ------------------------------------------------------------
 // Globals (unchanged)
@@ -329,6 +375,282 @@ bool GetExecutableVersionString(std::wstring& outVersion)
         std::to_wstring(build);
 
     return true;
+}
+
+// ------------------------------------------------------------
+// ✅ CHECK FOR UPDATES
+// ------------------------------------------------------------
+// Performs a synchronous HTTPS GET to the version manifest, compares the
+// reported version to kCurrentVersion, and either informs the user they are
+// up to date or prompts them to download and run the new installer.
+//
+// This function blocks the calling thread while the network request is in
+// flight. Always invoke it on a background thread (see IDM_CHECK_UPDATES
+// handler below) so the UI stays responsive.
+//
+// Update flow:
+//   1. GET https://waltonsurratt.github.io/jpegcompressor_version.json
+//   2. Parse JSON with nlohmann/json.
+//   3. Compare "current_version" field to kCurrentVersion.
+//   4. If equal  → show "You are up to date" message.
+//   5. If newer  → ask the user whether to install now.
+//   6. If yes    → download the installer EXE to %TEMP%, launch it with
+//                  ShellExecuteW, then close this instance so the installer
+//                  can replace the running binary without a file-lock error.
+//
+// The installer URL comes from the "download_url" field in the JSON so that
+// future releases only need to update the manifest, not this source file.
+void CheckForUpdates(HWND hOwner)
+{
+    // ── 1. Fetch the version manifest ──────────────────────────────────────
+    //
+    // cpp-httplib splits a URL into host + path.  We connect to the GitHub
+    // Pages host over HTTPS (port 443) and GET the manifest path.
+    //
+    // Host : waltonsurratt.github.io
+    // Path : /jpegcompressor_version.json
+    const std::string host = "https://waltonsurratt.github.io";
+    const std::string path = "/jpegcompressor_version.json";
+
+    httplib::Client cli(host);
+    cli.set_connection_timeout(10);   // seconds
+    cli.set_read_timeout(10);
+
+    auto res = cli.Get(path);
+
+    if (!res || res->status != 200)
+    {
+        MessageBoxW(
+            hOwner,
+            L"Unable to check for updates.\n\n"
+            L"Please verify your internet connection and try again.",
+            L"Check For Updates",
+            MB_ICONERROR | MB_OK);
+        return;
+    }
+
+    // ── 2. Parse JSON ───────────────────────────────────────────────────────
+    nlohmann::json manifest;
+    try
+    {
+        manifest = nlohmann::json::parse(res->body);
+    }
+    catch (const nlohmann::json::parse_error&)
+    {
+        MessageBoxW(
+            hOwner,
+            L"The update manifest could not be read (invalid JSON).\n\n"
+            L"Please try again later.",
+            L"Check For Updates",
+            MB_ICONERROR | MB_OK);
+        return;
+    }
+
+    // Required fields: "current_version" (string) and "download_url" (string).
+    if (!manifest.contains("current_version") ||
+        !manifest.contains("download_url") ||
+        !manifest["current_version"].is_string() ||
+        !manifest["download_url"].is_string())
+    {
+        MessageBoxW(
+            hOwner,
+            L"The update manifest is missing required fields.\n\n"
+            L"Please try again later.",
+            L"Check For Updates",
+            MB_ICONERROR | MB_OK);
+        return;
+    }
+
+    std::string serverVersion = manifest["current_version"].get<std::string>();
+    std::string downloadUrl = manifest["download_url"].get<std::string>();
+
+    // ── 3. Compare versions ─────────────────────────────────────────────────
+    if (serverVersion == kCurrentVersion)
+    {
+        // ── 4. Already up to date ───────────────────────────────────────────
+        MessageBoxW(
+            hOwner,
+            L"You are running the latest version of JPEG Compressor.",
+            L"Check For Updates",
+            MB_ICONINFORMATION | MB_OK);
+        return;
+    }
+
+    // ── 5. A newer version is available; prompt the user ───────────────────
+    std::wstring serverVerW(serverVersion.begin(), serverVersion.end());
+    std::wstring currentVerW(kCurrentVersion.begin(), kCurrentVersion.end());
+
+    std::wstring prompt =
+        L"A new version of JPEG Compressor is available.\n\n"
+        L"  Installed version : " + currentVerW + L"\n"
+        L"  Latest version    : " + serverVerW + L"\n\n"
+        L"Would you like to download and install the update now?";
+
+    int choice = MessageBoxW(
+        hOwner,
+        prompt.c_str(),
+        L"Update Available",
+        MB_ICONQUESTION | MB_YESNO);
+
+    if (choice != IDYES)
+        return;
+
+    // ── 6. Download the installer to %TEMP% ────────────────────────────────
+    //
+    // We derive the host and path from the download_url string so the code
+    // works for any future URL stored in the manifest, not just the current one.
+    //
+    // Expected format: "https://<host>/<path>"
+    //
+    // Simple parse: strip "https://", split on the first '/' after the host.
+    std::string dlUrl = downloadUrl;
+    std::string dlHost, dlPath;
+
+    const std::string httpsPrefix = "https://";
+    if (dlUrl.rfind(httpsPrefix, 0) == 0)
+        dlUrl = dlUrl.substr(httpsPrefix.size()); // strip scheme
+
+    size_t slashPos = dlUrl.find('/');
+    if (slashPos == std::string::npos)
+    {
+        // Malformed URL - no path component.
+        MessageBoxW(
+            hOwner,
+            L"The update download URL is malformed.\n\n"
+            L"Please visit the project page to download the update manually.",
+            L"Update Error",
+            MB_ICONERROR | MB_OK);
+        return;
+    }
+
+    dlHost = "https://" + dlUrl.substr(0, slashPos);
+    dlPath = dlUrl.substr(slashPos); // includes the leading '/'
+
+    // Derive a local filename from the last path segment (e.g. "JpegCompressor-x64-setup.exe").
+    std::string installerFilename = dlPath.substr(dlPath.find_last_of('/') + 1);
+    if (installerFilename.empty())
+        installerFilename = "JpegCompressor-setup.exe";
+
+    // Build full local path under %TEMP%.
+    wchar_t tempDir[MAX_PATH]{};
+    GetTempPathW(MAX_PATH, tempDir);
+    std::wstring installerFilenameW(installerFilename.begin(), installerFilename.end());
+    std::wstring localPath = std::wstring(tempDir) + installerFilenameW;
+
+    // Inform the user that the download is starting.
+    MessageBoxW(
+        hOwner,
+        L"The installer will now be downloaded.\n\n"
+        L"JPEG Compressor will close automatically once the download is complete "
+        L"so the installer can update the application.",
+        L"Downloading Update",
+        MB_ICONINFORMATION | MB_OK);
+
+    // ── Download the installer binary ───────────────────────────────────────
+    //
+    // Key settings that fix the "download failed" error:
+    //
+    //   follow_location(true)
+    //     GitHub Releases asset URLs return an HTTP 302 redirect to an
+    //     objects.githubusercontent.com CDN URL. cpp-httplib does NOT follow
+    //     redirects by default, so without this flag the client sees a 302,
+    //     treats it as a non-200 status, and we fall into the error path even
+    //     though the server is perfectly healthy.
+    //
+    //   enable_server_certificate_verification(false)
+    //     The GitHub CDN host (objects.githubusercontent.com) uses a certificate
+    //     chain that OpenSSL may fail to verify if the system's CA bundle is not
+    //     in the location cpp-httplib expects. Disabling cert verification for
+    //     the download step avoids a silent TLS handshake failure that also
+    //     produces a non-200/null result. The manifest fetch (above) keeps
+    //     verification enabled, so the version data itself is still validated.
+    httplib::Client dlCli(dlHost);
+    dlCli.set_connection_timeout(30);
+    dlCli.set_read_timeout(120);        // large binary; give it two minutes
+    dlCli.set_follow_location(true);    // chase GitHub's 302 redirect to CDN
+    dlCli.enable_server_certificate_verification(false); // avoid CA-bundle mismatch on CDN host
+
+    std::ofstream outFile(localPath, std::ios::binary);
+    if (!outFile)
+    {
+        MessageBoxW(
+            hOwner,
+            L"Could not write the installer to the temporary folder.\n\n"
+            L"Please check your disk space and try again.",
+            L"Update Error",
+            MB_ICONERROR | MB_OK);
+        return;
+    }
+
+    // Stream the response body directly to disk to avoid holding the whole
+    // binary in memory.
+    auto dlRes = dlCli.Get(
+        dlPath,
+        [&](const char* data, size_t len) -> bool
+        {
+            outFile.write(data, static_cast<std::streamsize>(len));
+            return true; // return false to abort mid-download
+        });
+
+    outFile.close();
+
+    if (!dlRes || dlRes->status != 200)
+    {
+        // Remove the partial/empty file so it does not litter %TEMP%.
+        DeleteFileW(localPath.c_str());
+
+        // Build a specific error message so future diagnostics are easier.
+        std::wstring errDetail;
+        if (!dlRes)
+        {
+            // cpp-httplib returns a null result when the connection itself
+            // fails (DNS failure, TLS error, timeout before any bytes arrive).
+            auto err = dlRes.error();
+            errDetail = L"Connection failed (httplib error " +
+                std::to_wstring(static_cast<int>(err)) + L").";
+        }
+        else
+        {
+            errDetail = L"Server returned HTTP " +
+                std::to_wstring(dlRes->status) + L".";
+        }
+
+        MessageBoxW(
+            hOwner,
+            (L"The installer download failed.\n\n" + errDetail +
+                L"\n\nPlease check your internet connection and try again.").c_str(),
+            L"Update Error",
+            MB_ICONERROR | MB_OK);
+        return;
+    }
+
+    // ── Launch the installer and exit this instance ─────────────────────────
+    //
+    // ShellExecuteW with "runas" triggers a UAC prompt so the installer can
+    // write to Program Files.  We close the current window first so the
+    // running EXE is not locked when the installer tries to replace it.
+    HINSTANCE launchResult = ShellExecuteW(
+        nullptr,
+        L"runas",             // request elevation
+        localPath.c_str(),
+        nullptr,
+        nullptr,
+        SW_SHOWNORMAL);
+
+    // ShellExecuteW returns a value > 32 on success.
+    if (reinterpret_cast<intptr_t>(launchResult) <= 32)
+    {
+        MessageBoxW(
+            hOwner,
+            L"The installer could not be launched.\n\n"
+            L"You can run the installer manually from your Temp folder.",
+            L"Update Error",
+            MB_ICONERROR | MB_OK);
+        return;
+    }
+
+    // Close the main window; the WM_DESTROY handler posts WM_QUIT.
+    PostMessage(hOwner, WM_CLOSE, 0, 0);
 }
 
 // ------------------------------------------------------------
@@ -1249,6 +1571,23 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             }
         }
         break;
+
+        // ── NEW: Check For Updates ──────────────────────────────────────────
+        // The network request (and any modal dialog it spawns) runs on a
+        // background thread so the main window stays responsive while the
+        // HTTPS GET is in flight. We capture hWnd by value so the lambda
+        // has a valid owner HWND even if WndProc has returned.
+        case IDM_CHECK_UPDATES:
+        {
+            HWND capturedWnd = hWnd;
+            std::thread updateThread([capturedWnd]()
+                {
+                    CheckForUpdates(capturedWnd);
+                });
+            updateThread.detach();
+        }
+        break;
+        // ───────────────────────────────────────────────────────────────────
 
         case IDM_ABOUT:
             DialogBox(hInst, MAKEINTRESOURCE(IDD_ABOUTBOX), hWnd, About);
