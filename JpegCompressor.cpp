@@ -77,7 +77,7 @@ constexpr size_t kMaxBatchFiles = 8192;
 
 // Version string for this build - must match the PE file version resource.
 // Used by CheckForUpdates() to compare against the server-reported version.
-static const std::string kCurrentVersion = "1.3.2";
+static const std::string kCurrentVersion = "1.3.1";
 
 // ------------------------------------------------------------
 // Globals (unchanged)
@@ -378,6 +378,96 @@ bool GetExecutableVersionString(std::wstring& outVersion)
 }
 
 // ------------------------------------------------------------
+// VERSION COMPARISON HELPERS
+// ------------------------------------------------------------
+
+// Parses a "MAJOR.MINOR.PATCH" version string into its three integer
+// components. Returns false if the string is not in that format, leaving
+// the out-parameters unchanged so callers can treat a bad parse as an
+// error rather than silently treating it as version 0.0.0.
+//
+// Intentionally strict: each component must be a non-negative integer with
+// no leading spaces, letters, or extra tokens. A two-part string ("1.3")
+// is accepted and leaves patch at its default (0). A four-or-more-part
+// string ("1.3.1.0") is rejected.
+bool ParseVersion(const std::string& versionStr,
+    int& major, int& minor, int& patch)
+{
+    major = 0;
+    minor = 0;
+    patch = 0;
+
+    if (versionStr.empty())
+        return false;
+
+    // Walk the string once, collecting up to three dot-separated integers.
+    int parts[3] = { 0, 0, 0 };
+    int partIndex = 0;
+    bool hasDigit = false;
+
+    for (size_t i = 0; i <= versionStr.size(); ++i)
+    {
+        char c = (i < versionStr.size()) ? versionStr[i] : '\0';
+
+        if (c >= '0' && c <= '9')
+        {
+            parts[partIndex] = parts[partIndex] * 10 + (c - '0');
+            hasDigit = true;
+        }
+        else if (c == '.' || c == '\0')
+        {
+            if (!hasDigit)
+                return false;   // empty component, e.g. "1..3" or leading dot
+
+            hasDigit = false;
+
+            if (c == '.')
+            {
+                ++partIndex;
+                if (partIndex > 2)
+                    return false; // more than three components
+            }
+        }
+        else
+        {
+            return false; // unexpected character
+        }
+    }
+
+    major = parts[0];
+    minor = parts[1];
+    patch = parts[2];
+    return true;
+}
+
+// Returns true only when 'candidate' is strictly greater than 'installed'
+// using standard semantic versioning precedence:
+//   MAJOR is most significant, then MINOR, then PATCH.
+//
+// Examples:
+//   IsNewerVersion("1.3.2", "1.3.1") → true   (server is newer)
+//   IsNewerVersion("1.3.1", "1.3.1") → false  (same version)
+//   IsNewerVersion("1.3.0", "1.3.1") → false  (server is OLDER — no prompt)
+//   IsNewerVersion("2.0.0", "1.9.9") → true   (major bump)
+//   IsNewerVersion("1.4.0", "1.3.9") → true   (minor bump)
+bool IsNewerVersion(const std::string& candidate, const std::string& installed)
+{
+    int cMaj = 0, cMin = 0, cPat = 0;
+    int iMaj = 0, iMin = 0, iPat = 0;
+
+    // If either string cannot be parsed, treat as "not newer" so we never
+    // prompt for a download based on malformed version data.
+    if (!ParseVersion(candidate, cMaj, cMin, cPat))
+        return false;
+    if (!ParseVersion(installed, iMaj, iMin, iPat))
+        return false;
+
+    if (cMaj != iMaj) return cMaj > iMaj;
+    if (cMin != iMin) return cMin > iMin;
+    return cPat > iPat;
+}
+
+// ------------------------------------------------------------
 // ✅ CHECK FOR UPDATES
 // ------------------------------------------------------------
 // Performs a synchronous HTTPS GET to the version manifest, compares the
@@ -391,9 +481,10 @@ bool GetExecutableVersionString(std::wstring& outVersion)
 // Update flow:
 //   1. GET https://waltonsurratt.github.io/jpegcompressor_version.json
 //   2. Parse JSON with nlohmann/json.
-//   3. Compare "current_version" field to kCurrentVersion.
-//   4. If equal  → show "You are up to date" message.
-//   5. If newer  → ask the user whether to install now.
+//   3. Compare "current_version" field to kCurrentVersion using semantic
+//      versioning — only prompt when the server version is STRICTLY GREATER.
+//   4. If server ≤ installed → show "You are up to date" message.
+//   5. If server  > installed → ask the user whether to install now.
 //   6. If yes    → download the installer EXE to %TEMP%, launch it with
 //                  ShellExecuteW, then close this instance so the installer
 //                  can replace the running binary without a file-lock error.
@@ -464,10 +555,17 @@ void CheckForUpdates(HWND hOwner)
     std::string serverVersion = manifest["current_version"].get<std::string>();
     std::string downloadUrl = manifest["download_url"].get<std::string>();
 
-    // ── 3. Compare versions ─────────────────────────────────────────────────
-    if (serverVersion == kCurrentVersion)
+    // ── 3. Compare versions (semantic) ─────────────────────────────────────
+    //
+    // IsNewerVersion returns true ONLY when the server reports a version that
+    // is strictly greater than the installed one. This means:
+    //   • Server == installed  → "up to date" message, no download.
+    //   • Server  < installed  → "up to date" message, no download.
+    //                            (e.g. user is on a pre-release/beta build)
+    //   • Server  > installed  → prompt the user to update.
+    if (!IsNewerVersion(serverVersion, kCurrentVersion))
     {
-        // ── 4. Already up to date ───────────────────────────────────────────
+        // ── 4. Already up to date (or on a newer build than the manifest) ──
         MessageBoxW(
             hOwner,
             L"You are running the latest version of JPEG Compressor.",
@@ -476,7 +574,7 @@ void CheckForUpdates(HWND hOwner)
         return;
     }
 
-    // ── 5. A newer version is available; prompt the user ───────────────────
+    // ── 5. A strictly newer version is available; prompt the user ──────────
     std::wstring serverVerW(serverVersion.begin(), serverVersion.end());
     std::wstring currentVerW(kCurrentVersion.begin(), kCurrentVersion.end());
 
