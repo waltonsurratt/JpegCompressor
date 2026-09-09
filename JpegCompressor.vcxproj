@@ -95,8 +95,8 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>C:\Libraries\libjpeg-turbo64\lib;C:\Users\walt\source\repos\JpegCompressor\Dependencies\libjpeg-turbo\lib;C:\Users\walt\source\repos\JpegCompressor\Dependencies\libjpeg-turbo64\lib</AdditionalLibraryDirectories>
-      <AdditionalDependencies>turbojpeg.lib;jpeg.lib;jpeg-static.lib;Version.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>C:\Libraries\libjpeg-turbo\lib;C:\Libraries\vcpkg\vcpkg\installed\x86-windows-static</AdditionalLibraryDirectories>
+      <AdditionalDependencies>C:\Libraries\libjpeg-turbo\jpeg-static.lib;C:\Libraries\libjpeg-turbo\lib\turbojpeg-static.lib;C:\Libraries\vcpkg\vcpkg\buildtrees\openssl\x86-windows-rel\libssl_static.lib;C:\Libraries\vcpkg\vcpkg\buildtrees\openssl\x86-windows-rel\libcrypto_static.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <ResourceCompile>
       <SuppressStartupBanner>false</SuppressStartupBanner>
@@ -111,14 +111,14 @@
       <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <AdditionalIncludeDirectories>$(SolutionDir)Dependencies\libjpeg-turbo\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>C:\Libraries\libjpeg-turbo64\lib;C:\Users\walt\source\repos\JpegCompressor\Dependencies\libjpeg-turbo\lib;C:\Users\walt\source\repos\JpegCompressor\Dependencies\libjpeg-turbo64\lib</AdditionalLibraryDirectories>
-      <AdditionalDependencies>turbojpeg.lib;jpeg.lib;jpeg-static.lib;Version.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>C:\Libraries\libjpeg-turbo\lib;C:\Libraries\vcpkg\vcpkg\installed\x86-windows-static</AdditionalLibraryDirectories>
+      <AdditionalDependencies>C:\Libraries\libjpeg-turbo\lib\jpeg-static.lib;C:\Libraries\libjpeg-turbo\lib\turbojpeg-static.lib;C:\Libraries\vcpkg\vcpkg\buildtrees\openssl\x86-windows-rel\libssl_static.lib;C:\Libraries\vcpkg\vcpkg\buildtrees\openssl\x86-windows-rel\libcrypto_static.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <ResourceCompile>
       <SuppressStartupBanner>false</SuppressStartupBanner>
@@ -135,14 +135,14 @@
       <PreprocessorDefinitions>_DEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>C:\libjpeg-turbo64\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>C:\Libraries\libjpeg-turbo64\lib;C:\Users\walt\source\repos\JpegCompressor\Dependencies\libjpeg-turbo\lib;C:\Users\walt\source\repos\JpegCompressor\Dependencies\libjpeg-turbo64\lib</AdditionalLibraryDirectories>
-      <AdditionalDependencies>turbojpeg.lib;jpeg.lib;jpeg-static.lib;Version.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>C:\Libraries\libjpeg-turbo64\lib;C:\Libraries\vcpkg\vcpkg\installed\x64-windows-static</AdditionalLibraryDirectories>
+      <AdditionalDependencies>C:\Libraries\libjpeg-turbo64\lib\jpeg-static.lib;C:\Libraries\libjpeg-turbo64\lib\turbojpeg-static.lib;C:\Libraries\vcpkg\vcpkg\buildtrees\openssl\x64-windows-rel\libssl_static.lib;C:\Libraries\vcpkg\vcpkg\buildtrees\openssl\x64-windows-rel\libcrypto_static.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <ResourceCompile>
       <SuppressStartupBanner>false</SuppressStartupBanner>
@@ -157,14 +157,14 @@
       <PreprocessorDefinitions>NDEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
-      <AdditionalIncludeDirectories>$(SolutionDir)Dependencies\libjpeg-turbo64\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>C:\Libraries\libjpeg-turbo64\lib;C:\Users\walt\source\repos\JpegCompressor\Dependencies\libjpeg-turbo\lib;C:\Users\walt\source\repos\JpegCompressor\Dependencies\libjpeg-turbo64\lib</AdditionalLibraryDirectories>
-      <AdditionalDependencies>turbojpeg.lib;jpeg.lib;jpeg-static.lib;Version.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>C:\Libraries\libjpeg-turbo64\lib;C:\Libraries\vcpkg\vcpkg\installed\x64-windows-static</AdditionalLibraryDirectories>
+      <AdditionalDependencies>C:\Libraries\libjpeg-turbo64\lib\jpeg-static.lib;C:\Libraries\libjpeg-turbo64\lib\turbojpeg-static.lib;C:\Libraries\vcpkg\vcpkg\buildtrees\openssl\x64-windows-rel\libssl_static.lib;C:\Libraries\vcpkg\vcpkg\buildtrees\openssl\x64-windows-rel\libcrypto_static.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <ResourceCompile>
       <SuppressStartupBanner>false</SuppressStartupBanner>

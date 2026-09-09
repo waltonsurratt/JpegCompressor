@@ -60,12 +60,22 @@
 #include "JpegCompressor.h"
 
 #pragma comment(lib, "comctl32.lib")
-// OpenSSL libs required by cpp-httplib for HTTPS:
-#pragma comment(lib, "libssl.lib")
-#pragma comment(lib, "libcrypto.lib")
-// Winsock (pulled in by cpp-httplib on Windows):
+// Version.lib provides GetFileVersionInfoSizeW, GetFileVersionInfoW, and
+// VerQueryValueW (used by GetExecutableVersionString). The dynamic runtime
+// used to pull this in silently; with static linking it must be explicit.
+#pragma comment(lib, "Version.lib")
+// OpenSSL static libs required by cpp-httplib for HTTPS.
+// libssl_static.lib and libcrypto_static.lib are the static variants —
+// linking these eliminates the libssl-3.dll and libcrypto-3.dll runtime
+// dependencies so no OpenSSL DLLs need to ship alongside the EXE.
+#pragma comment(lib, "libssl_static.lib")
+#pragma comment(lib, "libcrypto_static.lib")
+// Windows system libs required by the static OpenSSL build
+// (the dynamic build pulled these in internally via its own DLL):
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "crypt32.lib")
+#pragma comment(lib, "user32.lib")
+#pragma comment(lib, "advapi32.lib")
 
 #define MAX_LOADSTRING 100
 
