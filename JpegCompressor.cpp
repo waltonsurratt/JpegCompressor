@@ -68,8 +68,8 @@
 // libssl_static.lib and libcrypto_static.lib are the static variants —
 // linking these eliminates the libssl-3.dll and libcrypto-3.dll runtime
 // dependencies so no OpenSSL DLLs need to ship alongside the EXE.
-#pragma comment(lib, "libssl_static.lib")
-#pragma comment(lib, "libcrypto_static.lib")
+#pragma comment(lib, "libssl.lib")
+#pragma comment(lib, "libcrypto.lib")
 // Windows system libs required by the static OpenSSL build
 // (the dynamic build pulled these in internally via its own DLL):
 #pragma comment(lib, "ws2_32.lib")

@@ -82,6 +82,22 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <TargetName>$(ProjectName)-x86</TargetName>
   </PropertyGroup>
+  <PropertyGroup Label="Vcpkg" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <VcpkgUseStatic>true</VcpkgUseStatic>
+    <VcpkgTriplet>x64-windows-static</VcpkgTriplet>
+  </PropertyGroup>
+  <PropertyGroup Label="Vcpkg" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <VcpkgUseStatic>true</VcpkgUseStatic>
+    <VcpkgTriplet>x64-windows-static</VcpkgTriplet>
+  </PropertyGroup>
+  <PropertyGroup Label="Vcpkg" Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <VcpkgUseStatic>true</VcpkgUseStatic>
+    <VcpkgTriplet>x86-windows-static</VcpkgTriplet>
+  </PropertyGroup>
+  <PropertyGroup Label="Vcpkg" Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <VcpkgUseStatic>true</VcpkgUseStatic>
+    <VcpkgTriplet>x86-windows-static</VcpkgTriplet>
+  </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
@@ -96,7 +112,6 @@
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>C:\Libraries\libjpeg-turbo\lib;C:\Libraries\vcpkg\vcpkg\installed\x86-windows-static</AdditionalLibraryDirectories>
-      <AdditionalDependencies>C:\Libraries\libjpeg-turbo\jpeg-static.lib;C:\Libraries\libjpeg-turbo\lib\turbojpeg-static.lib;C:\Libraries\vcpkg\vcpkg\buildtrees\openssl\x86-windows-rel\libssl_static.lib;C:\Libraries\vcpkg\vcpkg\buildtrees\openssl\x86-windows-rel\libcrypto_static.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <ResourceCompile>
       <SuppressStartupBanner>false</SuppressStartupBanner>
@@ -111,14 +126,13 @@
       <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <AdditionalIncludeDirectories>$(SolutionDir)Dependencies\libjpeg-turbo\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>C:\Libraries\libjpeg-turbo\lib;C:\Libraries\vcpkg\vcpkg\installed\x86-windows-static</AdditionalLibraryDirectories>
-      <AdditionalDependencies>C:\Libraries\libjpeg-turbo\lib\jpeg-static.lib;C:\Libraries\libjpeg-turbo\lib\turbojpeg-static.lib;C:\Libraries\vcpkg\vcpkg\buildtrees\openssl\x86-windows-rel\libssl_static.lib;C:\Libraries\vcpkg\vcpkg\buildtrees\openssl\x86-windows-rel\libcrypto_static.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <ResourceCompile>
       <SuppressStartupBanner>false</SuppressStartupBanner>
@@ -141,8 +155,8 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>C:\Libraries\libjpeg-turbo64\lib;C:\Libraries\vcpkg\vcpkg\installed\x64-windows-static</AdditionalLibraryDirectories>
-      <AdditionalDependencies>C:\Libraries\libjpeg-turbo64\lib\jpeg-static.lib;C:\Libraries\libjpeg-turbo64\lib\turbojpeg-static.lib;C:\Libraries\vcpkg\vcpkg\buildtrees\openssl\x64-windows-rel\libssl_static.lib;C:\Libraries\vcpkg\vcpkg\buildtrees\openssl\x64-windows-rel\libcrypto_static.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>
+      </AdditionalLibraryDirectories>
     </Link>
     <ResourceCompile>
       <SuppressStartupBanner>false</SuppressStartupBanner>
@@ -157,14 +171,14 @@
       <PreprocessorDefinitions>NDEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>C:\Libraries\libjpeg-turbo64\lib;C:\Libraries\vcpkg\vcpkg\installed\x64-windows-static</AdditionalLibraryDirectories>
-      <AdditionalDependencies>C:\Libraries\libjpeg-turbo64\lib\jpeg-static.lib;C:\Libraries\libjpeg-turbo64\lib\turbojpeg-static.lib;C:\Libraries\vcpkg\vcpkg\buildtrees\openssl\x64-windows-rel\libssl_static.lib;C:\Libraries\vcpkg\vcpkg\buildtrees\openssl\x64-windows-rel\libcrypto_static.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>
+      </AdditionalLibraryDirectories>
     </Link>
     <ResourceCompile>
       <SuppressStartupBanner>false</SuppressStartupBanner>
