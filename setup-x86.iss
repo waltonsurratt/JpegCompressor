@@ -3,7 +3,7 @@
 ; Non-commercial use only
 
 #define MyAppName "JpegCompressor"
-#define MyAppVersion "1.3.2"
+#define MyAppVersion "1.4.0"
 #define MyAppPublisher "Surratt Solutions"
 #define MyAppURL "https://www.surrattsolutions.com/"
 #define MyAppExeName "JpegCompressor-x86.exe"
@@ -21,18 +21,18 @@ AppSupportURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}
 AppCopyright=Copyright (C) 2026 Surratt Solutions
 VersionInfoCopyright=Copyright (C) 2026 Surratt Solutions
-VersionInfoVersion=1.3.2.0
+VersionInfoVersion=1.4.0.0
 DefaultDirName={autopf32}\SurrattSolutions\{#MyAppName}
 UsePreviousAppDir=no
 UninstallDisplayIcon={app}\{#MyAppExeName}
 UninstallDisplayName=JpegCompressor (32-bit)
 DisableProgramGroupPage=yes
-LicenseFile=C:\Users\walt\source\repos\JpegCompressor\LICENSE.txt
+LicenseFile=C:\Users\tron\source\repos\JpegCompressor\LICENSE.txt
 ; Uncomment the following line to run in non administrative install mode (install for current user only).
 ;PrivilegesRequired=lowest
-OutputDir=C:\Users\walt\source\repos\JpegCompressor\Release
+OutputDir=C:\Users\tron\source\repos\JpegCompressor\Release
 OutputBaseFilename=JpegCompressor-x86-setup
-SetupIconFile=C:\Users\walt\source\repos\JpegCompressor\JpegCompressor.ico
+SetupIconFile=C:\Users\tron\source\repos\JpegCompressor\JpegCompressor.ico
 SolidCompression=yes
 WizardStyle=modern dynamic
 
@@ -43,7 +43,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "C:\Users\walt\source\repos\JpegCompressor\Release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "C:\Users\tron\source\repos\JpegCompressor\Release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
 
 [Icons]
