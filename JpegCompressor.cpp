@@ -87,7 +87,7 @@ constexpr size_t kMaxBatchFiles = 8192;
 
 // Version string for this build - must match the PE file version resource.
 // Used by CheckForUpdates() to compare against the server-reported version.
-static const std::string kCurrentVersion = "1.3.1";
+static const std::string kCurrentVersion = "1.4.0";
 
 // ------------------------------------------------------------
 // Globals (unchanged)
